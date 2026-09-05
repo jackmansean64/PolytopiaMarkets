@@ -57,11 +57,25 @@ struct Coord {
   }
 };
 
-// Result structure
-struct BacktrackResult {
-  int bestMarketTotal;
-  vector<vector<TileState>> bestLayout;
+// One Pareto-optimal configuration: a layout and its two objective totals.
+// marketTotal: sum of all market levels.
+// buildingTotal: sum of all building levels (each building gains a level per
+//   adjacent uncovered resource). A building only feeds a market when adjacent
+//   to one, so these two objectives can trade off against each other.
+struct ParetoConfig {
+  int marketTotal;
+  int buildingTotal;
+  vector<vector<TileState>> layout;
 };
+
+// Result of the Pareto frontier search: up to 3 non-dominated configurations.
+struct ParetoResult {
+  vector<ParetoConfig> configs;
+};
+
+// Forward declaration; full definition follows BacktrackState since it only
+// needs to be pointed at from there.
+struct ParetoAccumulator;
 
 // State structure
 struct BacktrackState {
@@ -96,6 +110,25 @@ struct BacktrackState {
     // Temp data structure for building levels
     // Cleared upon start of calculateMarketTotal and is only used there
     vector<int>& buildingLevelsCurrent;
+
+    // Optional Pareto frontier collector. When non-null, backtrackPlacements
+    // submits every complete layout's (marketTotal, buildingTotal) pair here.
+    // When null (the default), the search behaves exactly as the single-best
+    // market search and this field is ignored.
+    ParetoAccumulator* pareto = nullptr;
+};
+
+// Collects the non-dominated set of (marketTotal, buildingTotal) layouts seen
+// during backtracking. Both objectives are maximized: a point dominates another
+// when it is greater-or-equal on both totals.
+struct ParetoAccumulator {
+  vector<ParetoConfig> frontier;
+
+  // Offer a complete layout. It is kept only if no existing point dominates it;
+  // any existing points it dominates are removed first. Exact duplicates are
+  // ignored. The layout is copied only when the point is actually kept.
+  void offer(int marketTotal, int buildingTotal,
+             const vector<vector<TileState>>& layout);
 };
 
 inline void prettyPrint(const vector<vector<TileState>>& map) {
@@ -277,29 +310,33 @@ int calculateMarketTotal(const BacktrackState& state);
 
 
 /*
-Given a map and a capture/growth order, find the best market layout.
-Throw errors if invalid input is given.
-  (e.g. cities too close, too many buildings/markets placed, invalid city IDs, 
-  cityCenters does not match with map, etc.)
+Given a map and a capture/growth order, find the best market layouts by
+optimizing two objectives at once: total market level AND total building level
+(each building gains a level per adjacent uncovered resource). Returns up to 3
+Pareto-optimal configurations (arrangements where you cannot improve one
+objective without sacrificing the other), chosen as the frontier points with the
+highest market totals and sorted descending by market total.
+
+Throws if invalid input is given (e.g. cities too close, too many
+buildings/markets placed, invalid city IDs, cityCenters does not match the map).
 
 Args:
 map: 2D grid of ints representing tile types (EMPTY, CITY, OBSTACLE, RESOURCE)
 cityCenters: list of (row, col) coordinates for city centers which are claimed
       cityCenters[i] corresponds to city ID i
-vector<int> actionOrder: order in which each city is captured and border growths 
+actionOrder: order in which each city is captured and border growths
       (SAME DEF AS COMPUTEOWNERSHIP)
       The first occurence of a city ID captures the city
       The second occurence of a city ID border growths
-      All city IDs in cityCenters must appear in the map (but not necessarily the other way around).
       All city IDs in actionOrder must be in cityCenters.
       All city IDs in cityCenters must appear at least once in actionOrder, but at most twice.
 
 Return:
-BacktrackResult: bestMarketTotal and bestLayoutReturn
+ParetoResult: up to 3 ParetoConfigs, each with marketTotal, buildingTotal, and layout
 */
-BacktrackResult findBestMarketLayout(vector<vector<int>>& map, 
-                                    const vector<Coord>& cityCenters,
-                                    const vector<int>& actionOrder);
+ParetoResult findParetoFrontier(vector<vector<int>>& map,
+                                const vector<Coord>& cityCenters,
+                                const vector<int>& actionOrder);
 
 
 #endif // MARKETCALC_H_

@@ -1,10 +1,14 @@
 /**
- * Runs findBestMarketLayout wasm off the main thread.
+ * Runs findParetoFrontier wasm off the main thread.
  * Protocol: main posts { type: 'calculate', rows, cols, flatGrid, cityFlat, actionOrder, numCities, numActions }
  * Worker replies { type: 'ready' } | { type: 'initError', message } |
- *   { type: 'ok', result: Int32Array, bestMarketTotal: number } (buffer transferred) | { type: 'error', message }
+ *   { type: 'ok', configs: [{ marketTotal, buildingTotal, layout: Int32Array }] } (layout buffers transferred) |
+ *   { type: 'error', message }
+ * configs are up to 3 Pareto-optimal arrangements, sorted descending by marketTotal.
  */
 import createModule from './marketcalc.js';
+
+const MAX_CONFIGS = 3;
 
 let wasm = null;
 
@@ -29,18 +33,21 @@ self.onmessage = (ev) => {
   }
 
   const { rows, cols, flatGrid, cityFlat, actionOrder, numCities, numActions } = msg;
+  const cells = rows * cols;
 
   try {
-    const mapDataPtr = wasm._malloc(rows * cols * 4);
+    const mapDataPtr = wasm._malloc(cells * 4);
     const ccPtr = wasm._malloc(cityFlat.length * 4);
     const aoPtr = wasm._malloc(numActions * 4);
-    const resultLayoutPtr = wasm._malloc(rows * cols * 4);
+    const marketTotalsPtr = wasm._malloc(MAX_CONFIGS * 4);
+    const buildingTotalsPtr = wasm._malloc(MAX_CONFIGS * 4);
+    const layoutsPtr = wasm._malloc(MAX_CONFIGS * cells * 4);
     try {
-      new Int32Array(wasm.HEAP32.buffer, mapDataPtr, rows * cols).set(flatGrid);
+      new Int32Array(wasm.HEAP32.buffer, mapDataPtr, cells).set(flatGrid);
       new Int32Array(wasm.HEAP32.buffer, ccPtr, cityFlat.length).set(cityFlat);
       new Int32Array(wasm.HEAP32.buffer, aoPtr, numActions).set(actionOrder);
 
-      const bestMarketTotal = wasm._findBestMarketLayout_wasm(
+      const count = wasm._findParetoFrontier_wasm(
         mapDataPtr,
         rows,
         cols,
@@ -48,20 +55,33 @@ self.onmessage = (ev) => {
         numCities,
         aoPtr,
         numActions,
-        resultLayoutPtr,
+        marketTotalsPtr,
+        buildingTotalsPtr,
+        layoutsPtr,
       );
 
-      const out = new Int32Array(rows * cols);
-      out.set(new Int32Array(wasm.HEAP32.buffer, resultLayoutPtr, rows * cols));
-      self.postMessage(
-        { type: 'ok', result: out, bestMarketTotal },
-        [out.buffer],
-      );
+      const marketTotals = new Int32Array(wasm.HEAP32.buffer, marketTotalsPtr, MAX_CONFIGS);
+      const buildingTotals = new Int32Array(wasm.HEAP32.buffer, buildingTotalsPtr, MAX_CONFIGS);
+      const configs = [];
+      const transfer = [];
+      for (let k = 0; k < count; k++) {
+        const layout = new Int32Array(cells);
+        layout.set(new Int32Array(wasm.HEAP32.buffer, layoutsPtr + k * cells * 4, cells));
+        configs.push({
+          marketTotal: marketTotals[k],
+          buildingTotal: buildingTotals[k],
+          layout,
+        });
+        transfer.push(layout.buffer);
+      }
+      self.postMessage({ type: 'ok', configs }, transfer);
     } finally {
       wasm._free(mapDataPtr);
       wasm._free(ccPtr);
       wasm._free(aoPtr);
-      wasm._free(resultLayoutPtr);
+      wasm._free(marketTotalsPtr);
+      wasm._free(buildingTotalsPtr);
+      wasm._free(layoutsPtr);
     }
   } catch (e) {
     self.postMessage({

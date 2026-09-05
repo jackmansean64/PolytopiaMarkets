@@ -218,6 +218,18 @@ int backtrackPlacements(BacktrackState& state, int cityIdx, bool placingBuilding
       }
     }
     int result = calculateMarketTotal(state);
+
+    // If a Pareto collector is attached, also record this complete layout's
+    // building total. calculateMarketTotal just populated buildingLevelsCurrent,
+    // so summing it gives the total building level for this arrangement.
+    if (state.pareto != nullptr) {
+      int buildingTotal = 0;
+      for (int lvl : state.buildingLevelsCurrent) {
+        buildingTotal += lvl;
+      }
+      state.pareto->offer(result, buildingTotal, state.bestLayoutReturn);
+    }
+
     return result;
   }
 
@@ -322,8 +334,8 @@ int calculateMarketTotal(const BacktrackState& state) {
       int ny = buildingCoord.row + dy[j];
       int nx = buildingCoord.col + dx[j];
       Coord adjacentCoord = {ny, nx};
-      int owner = state.map[ny][nx].owner;
       if (inBounds(state.map, adjacentCoord)) {
+        int owner = state.map[ny][nx].owner;
         int type = state.map[ny][nx].type;
         if ((type == RESOURCE || type == USED_RESOURCE) &&
           owner != -1 &&
@@ -374,21 +386,43 @@ int calculateMarketTotal(const BacktrackState& state) {
 /*
 Defined in marketcalc.h
 */
-BacktrackResult findBestMarketLayout(vector<vector<int>>& map, 
-                                    const vector<Coord>& cityCenters,
-                                    const vector<int>& actionOrder) {
-  // Create tileState map from raw tile map
+void ParetoAccumulator::offer(int marketTotal, int buildingTotal,
+                              const vector<vector<TileState>>& layout) {
+  // Dominated by (or equal to) an existing frontier point? Then discard.
+  for (const auto& p : frontier) {
+    if (p.marketTotal >= marketTotal && p.buildingTotal >= buildingTotal) {
+      return;
+    }
+  }
+
+  // This point is non-dominated. Drop any existing points it dominates, then
+  // keep it. The layout copy happens here, only for points worth keeping.
+  frontier.erase(
+    std::remove_if(frontier.begin(), frontier.end(),
+      [&](const ParetoConfig& p) {
+        return marketTotal >= p.marketTotal && buildingTotal >= p.buildingTotal;
+      }),
+    frontier.end());
+  frontier.push_back(ParetoConfig{marketTotal, buildingTotal, layout});
+}
+
+/*
+Defined in marketcalc.h
+*/
+ParetoResult findParetoFrontier(vector<vector<int>>& map,
+                                const vector<Coord>& cityCenters,
+                                const vector<int>& actionOrder) {
+  // Build the ownership map, gather the tiles owned by each city, and seed any
+  // preplaced buildings/markets, then run the backtracking search.
   vector<vector<TileState>> tileMap(map.size(), vector<TileState>(map[0].size()));
   for (int i = 0; i < (int)map.size(); i++) {
     for (int j = 0; j < (int)map[0].size(); j++) {
       tileMap[i][j] = TileState{-1, map[i][j]};
-    } 
+    }
   }
 
-  // Get ownership
   computeOwnership(tileMap, cityCenters, actionOrder);
 
-  // Create tilesOwnedByCity vector
   vector<vector<Coord>> tilesOwnedByCity(cityCenters.size());
   for (int row = 0; row < (int)tileMap.size(); row++) {
     for (int col = 0; col < (int)tileMap[0].size(); col++) {
@@ -399,12 +433,11 @@ BacktrackResult findBestMarketLayout(vector<vector<int>>& map,
     }
   }
 
-  // Put existing buildings and markets in state
   vector<Coord> curBuildingsInCity(cityCenters.size(), Coord{-1, -1});
   vector<Coord> curMarketsInCity(cityCenters.size(), Coord{-1, -1});
   for (int i = 0; i < (int)tileMap.size(); i++) {
     for (int j = 0; j < (int)tileMap[0].size(); j++) {
-      int cityId = tileMap[i][j].owner; 
+      int cityId = tileMap[i][j].owner;
       if (tileMap[i][j].type == BUILDING) {
         if (curBuildingsInCity[cityId] != Coord{-1, -1}) {
           throw std::invalid_argument("Multiple buildings in city " + std::to_string(cityId));
@@ -412,7 +445,6 @@ BacktrackResult findBestMarketLayout(vector<vector<int>>& map,
         curBuildingsInCity[cityId] = Coord{i, j};
       }
       else if (tileMap[i][j].type == MARKET) {
-        int cityId = tileMap[i][j].owner;
         if (curMarketsInCity[cityId] != Coord{-1, -1}) {
           throw std::invalid_argument("Multiple markets in city " + std::to_string(cityId));
         }
@@ -425,6 +457,7 @@ BacktrackResult findBestMarketLayout(vector<vector<int>>& map,
   vector<vector<vector<TileState>>> tempLayouts(2 * cityCenters.size(), tileMap);
   vector<int> buildingLevelsCurrent(cityCenters.size(), 0);
 
+  ParetoAccumulator acc;
   BacktrackState state{
     tileMap,
     cityCenters,
@@ -435,11 +468,24 @@ BacktrackResult findBestMarketLayout(vector<vector<int>>& map,
     bestLayoutReturn,
     tempLayouts,
     buildingLevelsCurrent,
+    &acc,
   };
 
-  // int bestMarketTotal = 
-  int bestMarketTotal = backtrackPlacements(state, 0, true);
-  return BacktrackResult{bestMarketTotal, state.bestLayoutReturn};
+  // Visits every leaf; the accumulator records the non-dominated layouts.
+  backtrackPlacements(state, 0, true);
+
+  // Surface the frontier points with the highest market totals first.
+  std::sort(acc.frontier.begin(), acc.frontier.end(),
+    [](const ParetoConfig& a, const ParetoConfig& b) {
+      if (a.marketTotal != b.marketTotal) return a.marketTotal > b.marketTotal;
+      return a.buildingTotal > b.buildingTotal;
+    });
+
+  ParetoResult result;
+  for (int i = 0; i < (int)acc.frontier.size() && i < 3; i++) {
+    result.configs.push_back(acc.frontier[i]);
+  }
+  return result;
 }
 
 
@@ -449,37 +495,32 @@ REAL WASM FUNC
 
 extern "C" {
     /*
-    mapData, rows, cols: pointer to a 1d array of integers
-      structure: each tile is represented by an integer encoding type, rows x cols total length
+    Pareto frontier search, called from the worker.
 
-    cityCenterData, numCities: pointer to a 1d array of integers
-      structure: each city center is represented by 2 integers (row, col), numCities total length
-                so 2 * numCities total ints
-    actionOrderData, actionOrderSize: pointer to a 1d array of intgers
-      structure: each integer is a city ID, actionOrderSize total length
+    Inputs:
+      mapData, rows, cols: row-major grid of tile-type ints, rows*cols total
+      cityCenterData, numCities: 2 ints (row, col) per city, 2*numCities total
+      actionOrderData, actionOrderSize: one city ID per action (capture, then growth)
 
-    Returns:
-    int: best market total
-    through resultLayoutData: pointer to 1d array of ints (tile types),
-        (but with more markets and buildings), rows x cols total length
+    Outputs (caller-allocated, sized for up to 3 configs):
+      outMarketTotals:   int[3], market total for each returned config
+      outBuildingTotals: int[3], building total for each returned config
+      outLayouts:        int[3 * rows * cols], the layouts back to back; config
+                         k occupies [k*rows*cols, (k+1)*rows*cols)
+
+    Returns: the number of configs actually written (1..3).
     */
-    int32_t findBestMarketLayout_wasm(int32_t* mapData, int32_t rows, int32_t cols,
+    int32_t findParetoFrontier_wasm(int32_t* mapData, int32_t rows, int32_t cols,
                                     int32_t* cityCenterData, int32_t numCities,
                                     int32_t* actionOrderData, int32_t actionOrderSize,
-                                    int32_t* resultLayoutData) {
-        std::cout << "Received map of size " << rows << "x" << cols << std::endl;
+                                    int32_t* outMarketTotals,
+                                    int32_t* outBuildingTotals,
+                                    int32_t* outLayouts) {
         vector<vector<int>> map(rows, vector<int32_t>(cols));
         for (int i = 0; i < rows; i++) {
             for (int j = 0; j < cols; j++) {
                 map[i][j] = mapData[i * cols + j];
             }
-        }
-        std::cout << "Map data loaded." << std::endl;
-        for (int i = 0; i < rows; i++) {
-            for (int j = 0; j < cols; j++) {
-                std::cout << map[i][j] << " ";
-            }
-            std::cout << std::endl;
         }
 
         vector<Coord> cityCenters(numCities);
@@ -487,43 +528,27 @@ extern "C" {
             cityCenters[i] = Coord{cityCenterData[2 * i], cityCenterData[2 * i + 1]};
         }
 
-        std::cout << "City Centers:" << std::endl;
-        for (const auto& center : cityCenters) {
-            std::cout << "(" << center.row << ", " << center.col << ")" << std::endl;
-        }
-
         vector<int> actionOrder(actionOrderSize);
         for (int i = 0; i < actionOrderSize; i++) {
             actionOrder[i] = actionOrderData[i];
         }
 
-        std::cout << "Action Order: ";
-        for (const auto& action : actionOrder) {
-            std::cout << action << " ";
-        }
-        std::cout << std::endl;
+        ParetoResult result = findParetoFrontier(map, cityCenters, actionOrder);
 
-        std::cout << "Input Map:" << std::endl;
-        for (const auto& row : map) {
-            for (const auto& tile : row) {
-                std::cout << tile << " ";
-            }
-            std::cout << std::endl;
-        }
-
-
-        BacktrackResult result = findBestMarketLayout(map, cityCenters, actionOrder);
-
-        // Allocate memory for the result layout and return it
-        int* resultLayout = new int[rows * cols];
-        for (int i = 0; i < rows; i++) {
-            for (int j = 0; j < cols; j++) {
-                resultLayout[i * cols + j] = result.bestLayout[i][j].type;
+        int32_t n = (int32_t)result.configs.size();
+        if (n > 3) n = 3;
+        for (int32_t k = 0; k < n; k++) {
+            const ParetoConfig& cfg = result.configs[k];
+            outMarketTotals[k] = cfg.marketTotal;
+            outBuildingTotals[k] = cfg.buildingTotal;
+            int32_t base = k * rows * cols;
+            for (int i = 0; i < rows; i++) {
+                for (int j = 0; j < cols; j++) {
+                    outLayouts[base + i * cols + j] = cfg.layout[i][j].type;
+                }
             }
         }
-        memcpy(resultLayoutData, resultLayout, rows * cols * sizeof(int));
-        delete[] resultLayout;
-        return result.bestMarketTotal;
+        return n;
     }
 }
 
