@@ -1,0 +1,17 @@
+{
+  "name": "real-state-preplaced",
+  "source": "tests/marketcalc_test_common.h RealState map: preplaced building/market, used resources, obstacles",
+  "grid": [
+    [0, 0, 2, 0, 0, 0],
+    [0, 1, 4, 0, 0, 3],
+    [0, 6, 6, 0, 0, 0],
+    [0, 6, 0, 2, 1, 0],
+    [0, 1, 5, 0, 0, 0],
+    [0, 6, 4, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0]
+  ],
+  "cityCenters": [{ "row": 1, "col": 1 }, { "row": 3, "col": 4 }, { "row": 4, "col": 1 }],
+  "actionOrder": [0, 1, 2, 0, 1, 2],
+  "expected": {}
+}

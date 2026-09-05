@@ -1,5 +1,14 @@
 {
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --no-memory-protection-keys tools/differential-test.mjs",
+    "bench": "node --no-memory-protection-keys tools/bench.mjs"
+  },
   "dependencies": {
     "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "minizinc": "^4.5.2",
+    "web-worker": "^1.5.0"
   }
 }

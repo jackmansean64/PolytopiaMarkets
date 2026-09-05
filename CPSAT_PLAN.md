@@ -3,6 +3,68 @@
 Investigation + implementation plan for making the market/building optimizer scale
 past ~5 cities. Written 2026-09-04.
 
+## Status (2026-09-04)
+
+Stages 0, 1 and 3 are implemented on the `cpsat-solver` branch; Stage 2 is not.
+
+- **Solver:** MiniZinc 4.5.2 wasm build with Chuffed 0.14.0, loaded from jsDelivr
+  pinned to that version (18.85 MB wasm, 4.6 MB brotli on the wire, CORS and
+  `application/wasm` verified), driven from `static/market-solver.mjs`.
+- **Model changes from §3, all measured on a 3x3 cluster of border-grown cities
+  with every tile a resource** (the hardest map found; a real 6-city map took
+  14 s and a 9-city one never finished with the §3 model as written):
+  - Totals are summed **per city** first. Summing tile levels directly gives the
+    objective a domain of 0..8×tiles; per-city totals bound it to 0..8×cities.
+    Dense 3-city row map: 51 s → 0.2 s.
+  - Levels use `<=` pairs instead of `min`. Sound because both objectives are
+    maximised with positive weight, and every layout is re-scored by
+    `scoreLayout` anyway. Hard map: 42 s → 14 s for the weighted objective.
+  - **Each frontier point is two solves**: maximise the market total, then pin it
+    and maximise the building total. Proving the market total is nearly free
+    (0.4 s on the hard map); proving the building tiebreak is what costs
+    (10 s). Splitting them means the tiebreak can be capped without ever
+    compromising the market total, which is the objective users care about.
+  - Search annotations (`input_order`/`occurrence`/`largest` with
+    `indomain_max`) and free search were tried and are all worse, some
+    catastrophically. The model has none. HiGHS and CBC also lose to Chuffed.
+- **Interactive limits** (`INTERACTIVE_SOLVE_LIMITS`): 60 s per market solve,
+  15 s per tiebreak, 60 s for the whole sweep. The page shows each frontier
+  point as it arrives; a point whose search hit a limit is marked `*` ("best
+  found, not proven"). On the hard 9-city map the best layout is proven and on
+  screen in 10.7 s and the sweep ends at 60 s with three points, two of them
+  starred. On the 6-city all-resource cluster: best point in 1.7 s.
+- **Validation:** `npm test` runs `tools/differential-test.mjs` — the corpus in
+  `tests/corpus/` plus random maps with obstacles, used resources, border growths
+  and preplaced buildings/markets — against the C++ brute force built to
+  `tools/oracle/`, with no time limits so results must be exact. 504/504
+  random cases agreed on every frontier point for the per-city model and
+  204/204 for the two-solve model. One node run died in V8 itself (a
+  `ThreadIsolation::UnregisterWasmAllocation` check while a solver worker
+  thread was torn down); the same seed passed on rerun, so it is intermittent
+  and confined to the node harness. `npm test` and `npm run bench` pass
+  `--no-memory-protection-keys` to sidestep it; 204/204 passed that way too.
+- **Scaling** (`npm run bench`, cities in a row, no time limits, in node):
+
+  | cities | total | of which Chuffed | brute force |
+  |---|---|---|---|
+  | 3 | 1.3 s | 0.09 s | 0.6 s |
+  | 4 | 1.7 s | 0.5 s | 37.7 s |
+  | 6 | 2.4 s | 1.3 s | ~4 days (extrapolated) |
+  | 8 | 3.0 s | 1.5 s | — |
+  | 12 | 4.7 s | 3.2 s | — |
+
+  The ~1 s floor is MiniZinc flattening (~300 ms per solve, two solves per
+  point) plus JSON round-trips; that is what Stage 2 would remove.
+- **Browser:** the page loads the solver on the main thread
+  (`static/market-calculation.mjs`); MiniZinc runs Chuffed in its own worker, so
+  the old calc worker and `static/marketcalc.wasm` are gone from the bundle. A
+  2-city map shows its best layout at 2.0 s and all three points at 3.0 s in
+  Chrome.
+- **Not done:** Stage 2 (standalone Chuffed + FlatZinc emitter). Worth it only
+  if the 4.6 MB first-visit download or the CDN dependency becomes a problem.
+  The node harness in `tools/minizinc-node.mjs` runs the exact browser wasm
+  build, so a Stage 2 build can reuse the same tests.
+
 ---
 
 ## 1. Baseline: what actually breaks

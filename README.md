@@ -1,5 +1,27 @@
 # PolyMarketCalc
 
+## How the optimizer works
+
+Placement is solved as a constraint model (MiniZinc + Chuffed, a lazy clause
+generation solver) rather than by enumerating every layout. The model lives in
+`static/market-solver.mjs`; ownership and scoring rules shared with the verifier
+are in `static/market-rules.mjs`; `static/market-calculation.mjs` is the browser
+entry point, which loads the MiniZinc WebAssembly build from jsDelivr at a pinned
+version (bump the URL there and the `minizinc` devDependency together). Design
+notes and the measurements behind this are in `CPSAT_PLAN.md`.
+
+Each frontier point is two solves: the market total is maximised and proven
+first, then held fixed while the building total is maximised. The page shows
+each point as it arrives and caps the whole calculation at about a minute; a
+point marked `*` hit a time limit and is the best found rather than proven
+optimal (its market total is still exact).
+
+The original C++ brute-force search (`marketcalc.cc`) is kept as the reference
+oracle: `make wasm` builds it to `tools/oracle/` and `npm test` checks the solver
+against it on `tests/corpus/` plus random maps. `npm run bench` reports solve
+time by city count and on the hardest clustered maps.
+
+
 
 What you can do as a user:
 

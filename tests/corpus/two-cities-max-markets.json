@@ -1,0 +1,12 @@
+{
+  "name": "two-cities-max-markets",
+  "source": "tests/full_tests.cc TEST(full, TwoCitiesMaxMarkets)",
+  "grid": [
+    [0, 3, 3, 3, 3, 0],
+    [0, 1, 3, 3, 1, 0],
+    [0, 3, 3, 3, 3, 0]
+  ],
+  "cityCenters": [{ "row": 1, "col": 1 }, { "row": 1, "col": 4 }],
+  "actionOrder": [0, 1],
+  "expected": { "marketTotal": 16 }
+}
