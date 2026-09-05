@@ -17,7 +17,7 @@ EMFLAGS_COMMON = -std=c++17 -O2 -g -gsource-map \
 	-s MODULARIZE=1 \
 	-s EXPORT_NAME=createModule \
 	-s EXPORT_ES6=1 \
-	-s EXPORTED_FUNCTIONS='["_malloc","_free","_findBestMarketLayout_wasm"]' \
+	-s EXPORTED_FUNCTIONS='["_malloc","_free","_findParetoFrontier_wasm"]' \
 	-s EXPORTED_RUNTIME_METHODS='["HEAP32"]'
 
 EMFLAGS = $(EMFLAGS_COMMON)
