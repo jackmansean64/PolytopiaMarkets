@@ -9,7 +9,9 @@ TEST_SRC = $(wildcard tests/*_tests.cc)
 SRC = $(TEST_SRC) tests/test_main.cc marketcalc.cc
 
 EMCC ?= emcc
-WASM_JS = marketcalc.js
+# The C++ search is no longer shipped to the browser; it is built only as the
+# brute-force oracle that tools/differential-test.mjs checks the solver against.
+WASM_JS = tools/oracle/marketcalc.js
 # Sync with extern "C" in marketcalc.cc. Use _main_wasm here only if you define it.
 # -g + -gsource-map: .wasm.map for DevTools source-level view (serve beside .wasm).
 # --profiling-funcs: wasm "name" section (C++ symbol names) for Firefox Profiler — only in `make dev`.
@@ -22,7 +24,7 @@ EMFLAGS_COMMON = -std=c++17 -O2 -g -gsource-map \
 
 EMFLAGS = $(EMFLAGS_COMMON)
 
-.PHONY: all test run dev clean wasm wasm-dev
+.PHONY: all test run dev clean wasm wasm-dev solver-test bench
 
 all: $(TARGET)
 
@@ -40,10 +42,17 @@ wasm: $(WASM_JS)
 wasm-dev:
 	$(EMCC) marketcalc.cc -o $(WASM_JS) $(EMFLAGS_COMMON) --profiling-funcs
 
-run: wasm
+# Check the constraint solver against the brute-force oracle on the corpus plus random maps.
+solver-test: wasm
+	npm test
+
+bench: wasm
+	npm run bench
+
+run:
 	node server.js
 
-dev: wasm-dev
+dev:
 	node server.js
 
 clean:

@@ -1,0 +1,18 @@
+{
+  "name": "scenario1-beats-human",
+  "source": "tests/full_tests.cc TEST(full, Scenario1_BeatsHuman); see tests/examples/Scenario1.png",
+  "grid": [
+    [3, 2, 3, 3, 3, 3, 3],
+    [3, 1, 3, 0, 3, 1, 2],
+    [3, 0, 3, 0, 3, 2, 2],
+    [0, 2, 0, 3, 0, 2, 2],
+    [2, 3, 1, 3, 3, 3, 3],
+    [0, 3, 3, 3, 3, 1, 0],
+    [2, 0, 0, 2, 3, 3, 0]
+  ],
+  "cityCenters": [
+    { "row": 1, "col": 1 }, { "row": 1, "col": 5 }, { "row": 4, "col": 2 }, { "row": 5, "col": 5 }
+  ],
+  "actionOrder": [0, 1, 2, 3, 1],
+  "expected": { "marketTotalAtLeast": 27 }
+}

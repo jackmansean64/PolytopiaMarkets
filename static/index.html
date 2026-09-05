@@ -19,6 +19,17 @@ body{background:#f0f0f0;display:flex;align-items:flex-start;justify-content:cent
 #outer{display:flex;flex-direction:column;gap:12px;width:100%}
 #top-row{display:flex;flex-direction:row;align-items:stretch;gap:12px;width:100%}
 #root{flex:1;min-width:0;background:#fff;border:1px solid #ccc;display:grid;grid-template-rows:auto 1fr auto;grid-template-columns:auto 1fr auto}
+/* On screens wide enough for the sidebar, fill the viewport: the grid takes all
+   the height left after the bottom bar instead of the height of the sidebar. */
+@media (min-width:700px){
+  html,body{height:100%}
+  body{height:100vh;padding:8px;overflow:hidden;align-items:stretch}
+  #outer{height:100%;min-height:0}
+  #top-row{flex:1;min-height:0}
+  #root{min-height:0}
+  #grid-wrapper{min-height:0;min-width:0}
+  #bottom-bar{flex-shrink:0}
+}
 .corner{width:48px;height:48px}
 .h-bar{display:flex;align-items:center;justify-content:center;gap:4px;padding:8px 0}
 .h-bar.top{grid-row:1;grid-column:2}
@@ -85,19 +96,6 @@ body{background:#f0f0f0;display:flex;align-items:flex-start;justify-content:cent
 #clear-btn{border-color:#e53935;background:#fff0f0}
 #clear-btn:hover{background:#ffcdd2}
 #clear-btn svg{width:48px;height:48px}
-#debug-panel{background:#1e1e1e;color:#d4d4d4;border:1px solid #444;border-radius:6px;padding:12px;font-family:'Courier New',monospace;font-size:12px;width:100%;overflow-x:auto}
-.debug-title{color:#569cd6;font-weight:bold;font-size:13px;margin-bottom:10px;display:flex;align-items:center;gap:6px}
-.debug-title::before{content:'▶';font-size:10px;color:#4ec9b0}
-.debug-block{margin-bottom:14px}
-.debug-block:last-child{margin-bottom:0}
-.debug-label{color:#4ec9b0;font-size:11px;margin-bottom:4px;font-weight:bold}
-.debug-grid-row{display:flex;gap:4px;margin:2px 0}
-.debug-grid-cell{padding:2px 6px;border-radius:3px;font-size:11px;min-width:72px;text-align:center;background:#2d2d2d;color:#9cdcfe;border:1px solid #3c3c3c}
-.debug-grid-cell.city-small{background:#1a3a5c;color:#79c0ff;border-color:#4285f4}
-.debug-grid-cell.city-big{background:#3a1a5c;color:#d2a8ff;border-color:#9b59b6}
-.debug-inline{color:#ce9178}
-.debug-num{color:#b5cea8}
-.debug-key{color:#9cdcfe}
 #calc-overlay{position:fixed;inset:0;background:rgba(255,255,255,.88);z-index:10000;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(3px)}
 #calc-overlay.hidden{display:none!important}
 #calc-overlay-inner{text-align:center;color:#333;font:500 17px system-ui,-apple-system,sans-serif}
@@ -203,19 +201,14 @@ Optimize for anything else (like hanging population)
 <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="24" cy="24" r="20" stroke="#e53935" stroke-width="4"/><line x1="10" y1="38" x2="38" y2="10" stroke="#e53935" stroke-width="4" stroke-linecap="round"/></svg>
 </button></div></div></div>
 </div></div>
-<div id="bottom-bar"><div><h2>Polytopia Market Calculator</h2><br><h4>Made by cityblock</h4></div><div id="calc-bar-group"><button type="button" id="usage-btn" title="How to use" aria-haspopup="dialog" aria-controls="usage-modal">?</button><div id="calc-results" aria-live="polite"><div id="config-selector" role="group" aria-label="Optimal configurations"></div><div class="calc-totals-row"><div class="calc-total"><span class="calc-total-label">Market total</span><strong id="market-total-value">—</strong></div><div class="calc-total building"><span class="calc-total-label">Building total</span><strong id="building-total-value">—</strong></div></div></div><button type="button" id="calc-btn" disabled title="Loading solver…">Calculate</button><button type="button" id="clear-calc-btn" disabled title="Remove the calculation preview">Reset</button></div></div>
-<div id="debug-panel">
-<div class="debug-title">Debug</div>
-<div class="debug-block"><div class="debug-label">cityCenters</div><div id="dbg-city-centers"></div></div>
-<div class="debug-block"><div class="debug-label">actionOrder</div><div id="dbg-action-order"></div></div>
-<div class="debug-block"><div class="debug-label">tilesOwnedByCity</div><div id="dbg-tiles-owned"></div></div>
-<div class="debug-block"><div class="debug-label">grid</div><div id="dbg-grid"></div></div>
-</div>
+<div id="bottom-bar"><div><h2>Polytopia Market Calculator</h2><br><h4>Made by cityblock and JAQK</h4></div><div id="calc-bar-group"><button type="button" id="usage-btn" title="How to use" aria-haspopup="dialog" aria-controls="usage-modal">?</button><div id="calc-results" aria-live="polite"><div id="config-selector" role="group" aria-label="Optimal configurations"></div><div class="calc-totals-row"><div class="calc-total"><span class="calc-total-label">Market total</span><strong id="market-total-value">—</strong></div><div class="calc-total building"><span class="calc-total-label">Building total</span><strong id="building-total-value">—</strong></div></div></div><button type="button" id="calc-btn" disabled title="Loading solver…">Calculate</button><button type="button" id="clear-calc-btn" disabled title="Remove the calculation preview">Reset</button></div></div>
 </div>
 <script type="module">
 const $ = id => document.getElementById(id);
-let calcWorker = null;
-let calcWorkerReady = false;
+import { createMarketCalculator } from './market-calculation.mjs';
+
+let marketCalculator = null;
+let isMarketCalculatorReady = false;
 let calcInProgress = false;
 // Up to 3 Pareto-optimal configs from the last calculation, plus which one is
 // being previewed. Previews are non-destructive: they overlay placements on the
@@ -234,51 +227,22 @@ function hideCalcOverlay() {
   o.setAttribute('aria-hidden', 'true');
 }
 
-function initCalcWorker() {
-  try {
-    calcWorker = new Worker(new URL('marketcalc-calc-worker.js', import.meta.url), { type: 'module' });
-  } catch (e) {
-    console.error(e);
-    alert('Could not start calculation worker: ' + (e && e.message ? e.message : e));
-    return;
-  }
-  calcWorker.onmessage = (ev) => {
-    const m = ev.data;
-    if (m.type === 'ready') {
-      calcWorkerReady = true;
-      const btn = $('calc-btn');
-      if (btn) { btn.disabled = false; btn.title = ''; }
-      return;
-    }
-    if (m.type === 'initError') {
-      console.error('Worker WASM init failed:', m.message);
-      alert('Failed to load solver in worker: ' + m.message);
-      return;
-    }
-    if (m.type === 'error') {
-      hideCalcOverlay();
-      calcInProgress = false;
-      const btn = $('calc-btn');
-      if (btn) btn.disabled = false;
-      alert('Calculation failed: ' + m.message);
-      return;
-    }
-    if (m.type === 'ok') {
-      hideCalcOverlay();
-      calcInProgress = false;
-      setConfigs(Array.isArray(m.configs) ? m.configs : []);
-      const btn = $('calc-btn');
-      if (btn) btn.disabled = false;
-    }
-  };
-  calcWorker.onerror = (e) => {
-    console.error(e);
-    hideCalcOverlay();
-    calcInProgress = false;
+function initMarketCalculator() {
+  marketCalculator = createMarketCalculator();
+  marketCalculator.ready.then(() => {
+    isMarketCalculatorReady = true;
     const btn = $('calc-btn');
-    if (btn) btn.disabled = false;
-    alert('Worker error: ' + (e && e.message ? e.message : 'unknown'));
-  };
+    if (btn) { btn.disabled = false; btn.title = ''; }
+  }).catch((e) => {
+    console.error('Solver failed to load:', e);
+    alert('Failed to load solver: ' + (e && e.message ? e.message : e));
+  });
+}
+function finishCalculation() {
+  hideCalcOverlay();
+  calcInProgress = false;
+  const btn = $('calc-btn');
+  if (btn) btn.disabled = false;
 }
 
 function initUsageModal() {
@@ -305,7 +269,7 @@ function initUsageModal() {
   });
 }
 
-initCalcWorker();
+initMarketCalculator();
 initUsageModal();
 
 const F = 'img/field.png', W = 'img/water.png';
@@ -352,7 +316,6 @@ function undoOnce() {
   restoreEditorState(undoStack.pop());
   updateUndoButton();
   resetPreviewState();
-  renderDebug();
   render();
 }
 function isUpgradeTool() { return selectedVal === 'upgrade'; }
@@ -454,7 +417,6 @@ function handleCellClick(r, c) {
       const idx = cityIdxAt(r, c);
       if (idx !== -1) { actionOrder.push(idx); claimTiles(idx, r, c, 2); }
     }
-    renderDebug();
     render();
   } else {
     if (cityTiles.has(grid[r][c])) { disallowedAction(r, c); return; }
@@ -463,7 +425,6 @@ function handleCellClick(r, c) {
     if (selectedVal === 4 && cityAlreadyHas(r, c, 4)) { disallowedAction(r, c); return; }
     pushUndoSnapshot();
     grid[r][c] = selectedVal;
-    renderDebug();
     render();
   }
 }
@@ -482,7 +443,9 @@ function renderConfigSelector() {
     b.type = 'button';
     b.className = 'config-btn' + (i === selectedConfigIdx ? ' active' : '');
     b.setAttribute('aria-pressed', i === selectedConfigIdx ? 'true' : 'false');
-    b.innerHTML = `<span class="config-btn-idx">#${i + 1}</span><span class="config-btn-totals">M ${cfg.marketTotal} · B ${cfg.buildingTotal}</span>`;
+    const unprovenMark = cfg.isProvenOptimal === false ? '*' : '';
+    b.innerHTML = `<span class="config-btn-idx">#${i + 1}</span><span class="config-btn-totals">M ${cfg.marketTotal} · B ${cfg.buildingTotal}${unprovenMark}</span>`;
+    if (unprovenMark) b.title = 'Best layout found within the time limit; not proven optimal.';
     b.addEventListener('click', () => selectConfig(i));
     el.appendChild(b);
   });
@@ -509,6 +472,15 @@ function setConfigs(configs) {
   previewConfigs = configs || [];
   selectedConfigIdx = previewConfigs.length ? 0 : -1;
   if (previewConfigs.length === 0) alert('No valid market layout was found for this map.');
+  renderConfigSelector();
+  updateTotalsDisplay();
+  updateClearCalcButton();
+  render();
+}
+// Adds one frontier point as the solver finds it; the first one becomes the preview.
+function appendConfig(config) {
+  previewConfigs.push(config);
+  if (selectedConfigIdx < 0) selectedConfigIdx = 0;
   renderConfigSelector();
   updateTotalsDisplay();
   updateClearCalcButton();
@@ -613,13 +585,13 @@ function shiftCityCenters(dr, dc) {
     tilesOwnedByCity[idx] = tilesOwnedByCity[idx].map(t => ({ r: t.r + dr, c: t.c + dc }));
   });
 }
-$('top-plus').onclick  = () => { pushUndoSnapshot(); grid.unshift(newRow(grid[0].length)); shiftCityCenters(1, 0); renderDebug(); render(); };
-$('bot-plus').onclick  = () => { pushUndoSnapshot(); grid.push(newRow(grid[0].length)); renderDebug(); render(); };
-$('left-plus').onclick = () => { pushUndoSnapshot(); grid.forEach(r => r.unshift(0)); shiftCityCenters(0, 1); renderDebug(); render(); };
-$('right-plus').onclick= () => { pushUndoSnapshot(); grid.forEach(r => r.push(0)); renderDebug(); render(); };
+$('top-plus').onclick  = () => { pushUndoSnapshot(); grid.unshift(newRow(grid[0].length)); shiftCityCenters(1, 0); render(); };
+$('bot-plus').onclick  = () => { pushUndoSnapshot(); grid.push(newRow(grid[0].length)); render(); };
+$('left-plus').onclick = () => { pushUndoSnapshot(); grid.forEach(r => r.unshift(0)); shiftCityCenters(0, 1); render(); };
+$('right-plus').onclick= () => { pushUndoSnapshot(); grid.forEach(r => r.push(0)); render(); };
 
 $('calc-btn').onclick = () => {
-  if (!calcWorkerReady || !calcWorker) {
+  if (!isMarketCalculatorReady || !marketCalculator) {
     alert('Solver is still loading. Please wait a moment and try again.');
     return;
   }
@@ -642,15 +614,23 @@ $('calc-btn').onclick = () => {
   calcInProgress = true;
   $('calc-btn').disabled = true;
   showCalcOverlay();
-  calcWorker.postMessage({
-    type: 'calculate',
+  resetPreviewState();
+  marketCalculator.calculate({
     rows,
     cols,
     flatGrid: Int32Array.from(flatGrid),
     cityFlat: Int32Array.from(cityFlat),
     actionOrder: Int32Array.from(actionOrder),
-    numCities,
-    numActions,
+  }, {
+    // Show the best layout as soon as it is found; alternatives fill in after.
+    onConfig: (config) => { hideCalcOverlay(); appendConfig(config); },
+  }).then((configs) => {
+    finishCalculation();
+    if (configs.length === 0) setConfigs([]);
+  }).catch((e) => {
+    console.error(e);
+    finishCalculation();
+    alert('Calculation failed: ' + (e && e.message ? e.message : e));
   });
 };
 
@@ -663,36 +643,14 @@ $('clear-btn').onclick = () => {
     grid = [newRow(3), newRow(3), newRow(3)];
     cityCenters = []; actionOrder = []; tilesOwnedByCity = {};
     resetPreviewState();
-    renderDebug(); render();
+    render();
   }
 };
-
-function renderDebug() {
-  const ccEl = $('dbg-city-centers');
-  ccEl.innerHTML = cityCenters.length === 0 ? '<span class="debug-inline">[]</span>'
-    : cityCenters.map((cc, i) => `<span class="debug-key">[${i}]</span> <span class="debug-inline">{r: <span class="debug-num">${cc.r}</span>, c: <span class="debug-num">${cc.c}</span>}</span>`).join('<br>');
-  const aoEl = $('dbg-action-order');
-  aoEl.innerHTML = actionOrder.length === 0 ? '<span class="debug-inline">[]</span>'
-    : `[<span class="debug-num">${actionOrder.join('</span>, <span class="debug-num">')}</span>]`;
-  const toEl = $('dbg-tiles-owned'), idxs = Object.keys(tilesOwnedByCity);
-  toEl.innerHTML = idxs.length === 0 ? '<span class="debug-inline">{}</span>'
-    : idxs.map(idx => {
-        const tiles = tilesOwnedByCity[idx];
-        return `<span class="debug-key">[${idx}]</span> (${tiles.length}): ${tiles.map(t => `<span class="debug-inline">[<span class="debug-num">${t.r}</span>,<span class="debug-num">${t.c}</span>]</span>`).join(' ')}`;
-      }).join('<br>');
-  $('dbg-grid').innerHTML = grid.map(row => `<div class="debug-grid-row">${row.map(v => {
-    let cls = 'debug-grid-cell';
-    if (v === 8) cls += ' city-small';
-    if (v === 9) cls += ' city-big';
-    return `<span class="${cls}">${tileNames[v]}</span>`;
-  }).join('')}</div>`).join('');
-}
 
 window.addEventListener('resize', render);
 buildSidebar();
 updateUndoButton();
 render();
-renderDebug();
 </script>
 </body>
 </html>
