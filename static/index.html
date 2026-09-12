@@ -115,7 +115,7 @@ body{background:#f0f0f0;display:flex;align-items:flex-start;justify-content:cent
 #usage-modal .usage-modal__body strong{color:#3949ab}
 #usage-modal .usage-modal__close{position:absolute;top:12px;right:12px;width:36px;height:36px;border:none;border-radius:6px;background:#f0f0f0;color:#444;font-size:22px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0}
 #usage-modal .usage-modal__close:hover{background:#e0e0e0}
-#calc-results{display:flex;flex-direction:column;align-items:stretch;gap:8px;min-width:13em;padding:10px 16px;border:2px solid #c5cae9;border-radius:8px;background:#f8f9ff}
+#calc-results{display:flex;flex-direction:column;align-items:stretch;gap:8px;min-width:17em;padding:10px 16px;border:2px solid #c5cae9;border-radius:8px;background:#f8f9ff}
 #config-selector{display:flex;gap:6px;justify-content:center;flex-wrap:wrap}
 #config-selector:empty{display:none}
 .config-btn{display:flex;flex-direction:column;align-items:center;gap:1px;padding:4px 10px;border:2px solid #c5cae9;border-radius:6px;background:#fff;color:#5c6bc0;cursor:pointer;font:500 12px system-ui,-apple-system,sans-serif;line-height:1.2}
@@ -129,8 +129,12 @@ body{background:#f0f0f0;display:flex;align-items:flex-start;justify-content:cent
 .calc-total strong{font-weight:700;font-size:22px;color:#1a237e;letter-spacing:.02em}
 .calc-total.building .calc-total-label{color:#8e24aa}
 .calc-total.building strong{color:#6a1b9a}
+.calc-total.growth .calc-total-label{color:#00897b}
+.calc-total.growth strong{color:#00695c}
 .cell-preview{position:absolute;inset:8%;width:84%;height:84%;object-fit:contain;z-index:30;pointer-events:none;filter:drop-shadow(0 0 2px rgba(106,27,154,.9))}
 .cell--has-preview::before{content:'';position:absolute;inset:0;z-index:29;pointer-events:none;background:rgba(106,27,154,.20);box-shadow:inset 0 0 0 3px rgba(106,27,154,.7)}
+.cell-preview--growth{inset:0;width:100%;height:100%;filter:drop-shadow(0 0 3px rgba(0,137,123,.95))}
+.cell--has-growth-preview::before{content:'';position:absolute;inset:0;z-index:29;pointer-events:none;background:rgba(0,137,123,.20);box-shadow:inset 0 0 0 3px rgba(0,137,123,.75)}
 </style>
 </head>
 <body>
@@ -148,7 +152,10 @@ body{background:#f0f0f0;display:flex;align-items:flex-start;justify-content:cent
 <p>Click the map’s tiles to change them.</p>
 <p>Click the <strong>+</strong> on each side to expand the map.</p>
 <p>Use <strong>UNDO</strong> and <strong>CLEAR</strong> buttons when needed.</p>
-<p>Click <strong>Calculate</strong> to find the best possible market layout.</p>
+<p>Click <strong>Calculate</strong> to find the best possible market layouts.</p>
+<p>Each result is a trade-off between <strong>market stars</strong>, <strong>building population</strong> and
+  <strong>border growths</strong> used; pick one to preview it. A result may ask for border growths the map
+  does not have yet — those cities are outlined in teal, with the borders they would gain.</p>
 <p>To use for buildings/resources other than windmills/farms, make the following substitutions: 
   <br>Math: Windmill -> Sawmill, Forest -> Crop, Lumber Hut -> Farm
   <br>Smithery: Windmill -> Forge, Metal -> Crop, Mine -> Farm
@@ -164,10 +171,14 @@ body{background:#f0f0f0;display:flex;align-items:flex-start;justify-content:cent
 <hr>
 <p><strong>What this can and can't do</strong></p>
 <strong>Can:</strong> <br>
-Given a map and a city capture/border growth order, find the market layout with the highest total market sum for a single resource/building pair.
+Given a map and a city capture/border growth order, find the market layouts that trade off market stars,
+building population and border growths used, for a single resource/building pair.
+<br>
+It also tries every combination of extra border growths up to a third of your cities, so it will tell you
+which cities are worth growing.
 <br>
 <strong>Can't:</strong> (for now)<br>
-Find the best border growth order<br>
+Try more border growths than a third of your cities, or reorder the ones you already made<br>
 Use 2 or more resources/building pairs (sorry xin)<br>
 Optimize for anything else (like hanging population)
 
@@ -201,7 +212,7 @@ Optimize for anything else (like hanging population)
 <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="24" cy="24" r="20" stroke="#e53935" stroke-width="4"/><line x1="10" y1="38" x2="38" y2="10" stroke="#e53935" stroke-width="4" stroke-linecap="round"/></svg>
 </button></div></div></div>
 </div></div>
-<div id="bottom-bar"><div><h2>Polytopia Market Calculator</h2><br><h4>Made by cityblock and JAQK</h4></div><div id="calc-bar-group"><button type="button" id="usage-btn" title="How to use" aria-haspopup="dialog" aria-controls="usage-modal">?</button><div id="calc-results" aria-live="polite"><div id="config-selector" role="group" aria-label="Optimal configurations"></div><div class="calc-totals-row"><div class="calc-total"><span class="calc-total-label">Market total</span><strong id="market-total-value">—</strong></div><div class="calc-total building"><span class="calc-total-label">Building total</span><strong id="building-total-value">—</strong></div></div></div><button type="button" id="calc-btn" disabled title="Loading solver…">Calculate</button><button type="button" id="clear-calc-btn" disabled title="Remove the calculation preview">Reset</button></div></div>
+<div id="bottom-bar"><div><h2>Polytopia Market Calculator</h2><br><h4>Made by cityblock and JAQK</h4></div><div id="calc-bar-group"><button type="button" id="usage-btn" title="How to use" aria-haspopup="dialog" aria-controls="usage-modal">?</button><div id="calc-results" aria-live="polite"><div id="config-selector" role="group" aria-label="Optimal configurations"></div><div class="calc-totals-row"><div class="calc-total"><span class="calc-total-label">Market stars</span><strong id="market-stars-value">—</strong></div><div class="calc-total building"><span class="calc-total-label">Building pop</span><strong id="building-pop-value">—</strong></div><div class="calc-total growth"><span class="calc-total-label">Border growths</span><strong id="border-growth-value">—</strong></div></div></div><button type="button" id="calc-btn" disabled title="Loading solver…">Calculate</button><button type="button" id="clear-calc-btn" disabled title="Remove the calculation preview">Reset</button></div></div>
 </div>
 <script type="module">
 const $ = id => document.getElementById(id);
@@ -215,6 +226,9 @@ let calcInProgress = false;
 // grid without modifying it. Cleared on any edit.
 let previewConfigs = [];
 let selectedConfigIdx = -1;
+// Until the user picks a point themselves, the preview follows the best market
+// total, which keeps improving as the sweep reaches deeper border-growth plans.
+let hasUserPickedConfig = false;
 
 function showCalcOverlay() {
   const o = $('calc-overlay');
@@ -358,22 +372,33 @@ function updateSelectedBox() {
   box.classList.toggle('selected-has-city', !!isCityShape);
 }
 function cityIdxAt(r, c) { return cityCenters.findIndex(cc => cc.r === r && cc.c === c); }
-function allOwnedSet() {
+function allOwnedSet(ownedByCity) {
   const s = new Set();
-  Object.values(tilesOwnedByCity).forEach(tiles => tiles.forEach(t => s.add(`${t.r},${t.c}`)));
+  Object.values(ownedByCity).forEach(tiles => tiles.forEach(t => s.add(`${t.r},${t.c}`)));
   return s;
 }
-function claimTiles(idx, cr, cc, half) {
-  const owned = allOwnedSet();
-  if (!tilesOwnedByCity[idx]) tilesOwnedByCity[idx] = [];
+function claimTilesInto(ownedByCity, idx, cr, cc, half) {
+  const owned = allOwnedSet(ownedByCity);
+  if (!ownedByCity[idx]) ownedByCity[idx] = [];
   for (let dr = -half; dr <= half; dr++) {
     for (let dc = -half; dc <= half; dc++) {
       const r = cr + dr, c = cc + dc;
       if (owned.has(`${r},${c}`)) continue;
-      tilesOwnedByCity[idx].push({ r, c });
+      ownedByCity[idx].push({ r, c });
       owned.add(`${r},${c}`);
     }
   }
+}
+function claimTiles(idx, cr, cc, half) { claimTilesInto(tilesOwnedByCity, idx, cr, cc, half); }
+// Borders for a previewed config: the map's own ownership plus the border
+// growths that config asks for, claimed in the same order the solver used.
+function ownershipWithExtraGrowths(extraBorderGrowthCities) {
+  const ownedByCity = cloneTilesOwnedByCity(tilesOwnedByCity);
+  extraBorderGrowthCities.forEach(idx => {
+    const center = cityCenters[idx];
+    if (center) claimTilesInto(ownedByCity, idx, center.r, center.c, 2);
+  });
+  return ownedByCity;
 }
 function disallowedAction(r, c) {
   const cols = grid[0].length, idx = r * cols + c, cell = $('grid-container').children[idx];
@@ -430,9 +455,31 @@ function handleCellClick(r, c) {
 }
 function canUpgrade(val) { return upgradeChain[val] !== undefined; }
 
-function activePreviewLayout() {
+function activePreviewConfig() {
   if (selectedConfigIdx < 0 || selectedConfigIdx >= previewConfigs.length) return null;
-  return previewConfigs[selectedConfigIdx].layout;
+  return previewConfigs[selectedConfigIdx];
+}
+// A frontier point is unique in its three objectives, so they identify it
+// across the reruns that arrive while the sweep is still going.
+function configKey(cfg) {
+  return `${cfg.borderGrowthCount}:${cfg.marketTotal}:${cfg.buildingTotal}`;
+}
+// Configs are ordered fewest growths first, then most stars, so the first
+// config with the highest star total is also the cheapest way to reach it.
+function bestMarketConfigIdx() {
+  let best = -1;
+  previewConfigs.forEach((cfg, i) => {
+    if (best < 0 || cfg.marketTotal > previewConfigs[best].marketTotal) best = i;
+  });
+  return best;
+}
+function describeGrowths(cfg) {
+  const grown = cfg.extraBorderGrowthCities
+    .map(idx => cityCenters[idx])
+    .filter(Boolean)
+    .map(cc => `row ${cc.r + 1}, column ${cc.c + 1}`);
+  if (grown.length === 0) return 'Uses only the border growths already on the map.';
+  return `Border-grow the ${grown.length === 1 ? 'city' : 'cities'} at ${grown.join('; ')}.`;
 }
 function renderConfigSelector() {
   const el = $('config-selector');
@@ -444,43 +491,38 @@ function renderConfigSelector() {
     b.className = 'config-btn' + (i === selectedConfigIdx ? ' active' : '');
     b.setAttribute('aria-pressed', i === selectedConfigIdx ? 'true' : 'false');
     const unprovenMark = cfg.isProvenOptimal === false ? '*' : '';
-    b.innerHTML = `<span class="config-btn-idx">#${i + 1}</span><span class="config-btn-totals">M ${cfg.marketTotal} · B ${cfg.buildingTotal}${unprovenMark}</span>`;
-    if (unprovenMark) b.title = 'Best layout found within the time limit; not proven optimal.';
+    b.innerHTML = `<span class="config-btn-idx">#${i + 1}</span><span class="config-btn-totals">${cfg.marketTotal}★ · ${cfg.buildingTotal} pop · ${cfg.borderGrowthCount} BG${unprovenMark}</span>`;
+    const unprovenNote = ' Best layout found within the time limit; not proven optimal.';
+    b.title = describeGrowths(cfg) + (unprovenMark ? unprovenNote : '');
     b.addEventListener('click', () => selectConfig(i));
     el.appendChild(b);
   });
 }
 function updateTotalsDisplay() {
-  const mv = $('market-total-value'), bv = $('building-total-value');
-  if (selectedConfigIdx < 0 || selectedConfigIdx >= previewConfigs.length) {
-    if (mv) mv.textContent = '—';
-    if (bv) bv.textContent = '—';
-    return;
-  }
-  const cfg = previewConfigs[selectedConfigIdx];
-  if (mv) mv.textContent = String(cfg.marketTotal);
-  if (bv) bv.textContent = String(cfg.buildingTotal);
+  const fields = [
+    [$('market-stars-value'), cfg => cfg.marketTotal],
+    [$('building-pop-value'), cfg => cfg.buildingTotal],
+    [$('border-growth-value'), cfg => cfg.borderGrowthCount],
+  ];
+  const cfg = activePreviewConfig();
+  fields.forEach(([el, valueOf]) => { if (el) el.textContent = cfg ? String(valueOf(cfg)) : '—'; });
 }
 function selectConfig(idx) {
   if (idx < 0 || idx >= previewConfigs.length) return;
+  hasUserPickedConfig = true;
   selectedConfigIdx = idx;
   renderConfigSelector();
   updateTotalsDisplay();
   render();
 }
-function setConfigs(configs) {
+// Shows the frontier found so far. The sweep keeps refining it, and a point can
+// be dropped by a better one at the same border-growth count, so the whole list
+// is replaced each time; the previewed point is kept if it survived.
+function setFrontier(configs) {
+  const previewedKey = hasUserPickedConfig && activePreviewConfig() ? configKey(activePreviewConfig()) : null;
   previewConfigs = configs || [];
-  selectedConfigIdx = previewConfigs.length ? 0 : -1;
-  if (previewConfigs.length === 0) alert('No valid market layout was found for this map.');
-  renderConfigSelector();
-  updateTotalsDisplay();
-  updateClearCalcButton();
-  render();
-}
-// Adds one frontier point as the solver finds it; the first one becomes the preview.
-function appendConfig(config) {
-  previewConfigs.push(config);
-  if (selectedConfigIdx < 0) selectedConfigIdx = 0;
+  const keptIdx = previewedKey === null ? -1 : previewConfigs.findIndex(c => configKey(c) === previewedKey);
+  selectedConfigIdx = keptIdx >= 0 ? keptIdx : bestMarketConfigIdx();
   renderConfigSelector();
   updateTotalsDisplay();
   updateClearCalcButton();
@@ -495,6 +537,7 @@ function updateClearCalcButton() {
 function resetPreviewState() {
   previewConfigs = [];
   selectedConfigIdx = -1;
+  hasUserPickedConfig = false;
   renderConfigSelector();
   updateTotalsDisplay();
   updateClearCalcButton();
@@ -503,7 +546,12 @@ function resetPreviewState() {
 function render() {
   const container = $('grid-container'), wrapper = $('grid-wrapper');
   const rows = grid.length, cols = grid[0].length;
-  const preview = activePreviewLayout();
+  const previewConfig = activePreviewConfig();
+  const preview = previewConfig ? previewConfig.layout : null;
+  const growthCells = new Set((previewConfig ? previewConfig.extraBorderGrowthCities : [])
+    .map(idx => cityCenters[idx])
+    .filter(Boolean)
+    .map(cc => `${cc.r},${cc.c}`));
   const maxW = wrapper.clientWidth - 16, maxH = Math.max(wrapper.clientHeight - 16, 100);
   cellSize = Math.min(Math.floor(maxW / cols), Math.floor(maxH / rows), 140);
   container.style.gridTemplateColumns = `repeat(${cols}, ${cellSize}px)`;
@@ -534,6 +582,14 @@ function render() {
           cell.classList.add('cell--has-preview');
         }
       }
+      if (growthCells.has(`${r},${c}`) && val !== 9) {
+        const pv = document.createElement('img');
+        pv.className = 'cell-preview cell-preview--growth';
+        pv.src = tileOverlay[9];
+        pv.alt = '';
+        cell.appendChild(pv);
+        cell.classList.add('cell--has-growth-preview');
+      }
       cell.addEventListener('click', () => handleCellClick(r, c));
       container.appendChild(cell);
     }
@@ -543,9 +599,9 @@ function render() {
   // (the results block can be taller than this on large grids / small cells).
   bb.style.minHeight = (cellSize + 24) + 'px';
   bb.style.height = '';
-  renderBorders();
+  renderBorders(previewConfig ? ownershipWithExtraGrowths(previewConfig.extraBorderGrowthCities) : tilesOwnedByCity);
 }
-function renderBorders() {
+function renderBorders(ownedByCity) {
   const svg = $('border-svg'), container = $('grid-container'), wrapper = $('grid-wrapper');
   const rows = grid.length, cols = grid[0].length, W = cols * cellSize, H = rows * cellSize;
   const cRect = container.getBoundingClientRect(), wRect = wrapper.getBoundingClientRect();
@@ -556,7 +612,7 @@ function renderBorders() {
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
   svg.innerHTML = '';
   const stroke = Math.max(3, Math.round(cellSize * 0.1));
-  Object.entries(tilesOwnedByCity).forEach(([, tiles]) => {
+  Object.entries(ownedByCity).forEach(([, tiles]) => {
     const inBounds = tiles.filter(t => t.r >= 0 && t.r < rows && t.c >= 0 && t.c < cols);
     if (inBounds.length === 0) return;
     const owned = new Set(tiles.map(t => `${t.r},${t.c}`));
@@ -622,11 +678,12 @@ $('calc-btn').onclick = () => {
     cityFlat: Int32Array.from(cityFlat),
     actionOrder: Int32Array.from(actionOrder),
   }, {
-    // Show the best layout as soon as it is found; alternatives fill in after.
-    onConfig: (config) => { hideCalcOverlay(); appendConfig(config); },
+    // Show the frontier as soon as it has a point; the rest fills in after.
+    onFrontier: (configs) => { hideCalcOverlay(); setFrontier(configs); },
   }).then((configs) => {
     finishCalculation();
-    if (configs.length === 0) setConfigs([]);
+    setFrontier(configs);
+    if (configs.length === 0) alert('No valid market layout was found for this map.');
   }).catch((e) => {
     console.error(e);
     finishCalculation();

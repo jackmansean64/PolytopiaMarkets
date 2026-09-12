@@ -8,7 +8,7 @@
  * CDN serves it brotli-compressed with a one-year immutable cache.
  */
 import * as MiniZinc from 'https://cdn.jsdelivr.net/npm/minizinc@4.5.2/dist/minizinc.mjs';
-import { solveParetoFrontier, INTERACTIVE_SOLVE_LIMITS } from './market-solver.mjs';
+import { solveBorderGrowthFrontier, INTERACTIVE_SOLVE_LIMITS } from './market-solver.mjs';
 
 /** One solver worker is enough: the frontier sweep solves sequentially. */
 const SOLVER_WORKER_COUNT = 1;
@@ -17,6 +17,10 @@ const SOLVER_WORKER_COUNT = 1;
  * @typedef {object} PageConfig
  * @property {number} marketTotal
  * @property {number} buildingTotal
+ * @property {number} borderGrowthCount - Border growths this layout needs in
+ *   total, counting the ones the map already has.
+ * @property {number[]} extraBorderGrowthCities - City ids the user would have
+ *   to border-grow on top of what the map already has.
  * @property {Int32Array} layout - Tile types, row-major.
  * @property {boolean} isProvenOptimal - False if a time limit cut the search short.
  */
@@ -28,19 +32,21 @@ const SOLVER_WORKER_COUNT = 1;
  *   ready: Promise<void>,
  *   calculate: (request: {
  *     rows: number, cols: number, flatGrid: Int32Array, cityFlat: Int32Array, actionOrder: Int32Array,
- *   }, callbacks?: { onConfig?: (config: PageConfig) => void }) => Promise<PageConfig[]>,
+ *   }, callbacks?: { onFrontier?: (frontier: PageConfig[]) => void }) => Promise<PageConfig[]>,
  * }} `ready` resolves once the solver can be used; `calculate` waits for it and
- *   reports each frontier point through `onConfig` as it is found, before
- *   resolving with all of them.
+ *   reports the frontier through `onFrontier` every time it changes, before
+ *   resolving with the final one.
  */
 export function createMarketCalculator() {
   const ready = MiniZinc.init({ numWorkers: SOLVER_WORKER_COUNT });
 
-  const toPageConfig = ({ marketTotal, buildingTotal, layout, isProvenOptimal }) => ({
-    marketTotal,
-    buildingTotal,
-    layout: Int32Array.from(layout.flat()),
-    isProvenOptimal,
+  const toPageConfig = (config) => ({
+    marketTotal: config.marketTotal,
+    buildingTotal: config.buildingTotal,
+    borderGrowthCount: config.borderGrowthCount,
+    extraBorderGrowthCities: config.extraBorderGrowthCities.slice(),
+    layout: Int32Array.from(config.layout.flat()),
+    isProvenOptimal: config.isProvenOptimal,
   });
 
   async function calculate({ rows, cols, flatGrid, cityFlat, actionOrder }, callbacks = {}) {
@@ -53,11 +59,13 @@ export function createMarketCalculator() {
     for (let i = 0; i + 1 < cityFlat.length; i += 2) {
       cityCenters.push({ row: cityFlat[i], col: cityFlat[i + 1] });
     }
-    const configs = await solveParetoFrontier(MiniZinc, grid, cityCenters, Array.from(actionOrder), {
+    const frontier = await solveBorderGrowthFrontier(MiniZinc, grid, cityCenters, Array.from(actionOrder), {
       ...INTERACTIVE_SOLVE_LIMITS,
-      onConfig: callbacks.onConfig ? (config) => callbacks.onConfig(toPageConfig(config)) : undefined,
+      onFrontier: callbacks.onFrontier
+        ? (configs) => callbacks.onFrontier(configs.map(toPageConfig))
+        : undefined,
     });
-    return configs.map(toPageConfig);
+    return frontier.map(toPageConfig);
   }
 
   return { ready, calculate };

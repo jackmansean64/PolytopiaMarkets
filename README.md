@@ -10,23 +10,42 @@ entry point, which loads the MiniZinc WebAssembly build from jsDelivr at a pinne
 version (bump the URL there and the `minizinc` devDependency together). Design
 notes and the measurements behind this are in `CPSAT_PLAN.md`.
 
-Each frontier point is two solves: the market total is maximised and proven
-first, then held fixed while the building total is maximised. The page shows
-each point as it arrives and caps the whole calculation at about a minute; a
+The frontier has three dimensions: market stars, building population, and
+border growths used. For one fixed set of border growths, each point is two
+solves: the market total is maximised and proven first, then held fixed while
+the building total is maximised. On top of that the sweep tries every
+combination of extra border growths up to a third of the map's cities (see
+`maxExtraBorderGrowths`), one such market/building sweep per combination, and
+keeps the points no other point beats on all three at once.
+
+Combinations are tried fewest-growths-first, so the layouts asking least of the
+player arrive first, and within a growth count the ones claiming the most new
+land go first. The page shows the frontier as it grows and caps the whole
+calculation at about two minutes, with any single combination capped at 20 s; a
 point marked `*` hit a time limit and is the best found rather than proven
-optimal (its market total is still exact).
+optimal (its market total is still exact). On maps big enough that the budget
+runs out — nine cities is 130 combinations, and `npm run bench` puts that at
+about two minutes — the sweep returns fewer combinations rather than running
+long.
+
+Extra growths are appended after everything the player already did, and within
+one combination they go in city id order, so contested tiles fall to the lowest
+id; other orderings of the same set are not tried.
 
 The original C++ brute-force search (`marketcalc.cc`) is kept as the reference
 oracle: `make wasm` builds it to `tools/oracle/` and `npm test` checks the solver
-against it on `tests/corpus/` plus random maps. `npm run bench` reports solve
-time by city count and on the hardest clustered maps.
+against it on `tests/corpus/` plus random maps. The border-growth frontier is
+checked the same way on the smallest cases, by running the oracle once per
+combination and comparing against the non-dominated triples of the union.
+`npm run bench` reports solve time by city count, on the hardest clustered maps,
+and for the border-growth sweep.
 
 
 
 What you can do as a user:
 
 - Calculate the best market spots for either windmills or sawmills, but not both
-  - Tell you which BGs are best?
+- See which border growths are worth making, and what they buy you
 - Simulate capturing cities, border growths, and placing buildings/resources
 - Assumes every unused resource is either used or has a building/market placed on it
 

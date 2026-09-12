@@ -28,11 +28,12 @@ Stages 0, 1 and 3 are implemented on the `cpsat-solver` branch; Stage 2 is not.
     `indomain_max`) and free search were tried and are all worse, some
     catastrophically. The model has none. HiGHS and CBC also lose to Chuffed.
 - **Interactive limits** (`INTERACTIVE_SOLVE_LIMITS`): 60 s per market solve,
-  15 s per tiebreak, 60 s for the whole sweep. The page shows each frontier
-  point as it arrives; a point whose search hit a limit is marked `*` ("best
-  found, not proven"). On the hard 9-city map the best layout is proven and on
-  screen in 10.7 s and the sweep ends at 60 s with three points, two of them
-  starred. On the 6-city all-resource cluster: best point in 1.7 s.
+  15 s per tiebreak, 20 s per border-growth plan, 120 s for the whole sweep.
+  The page shows the frontier as it grows; a point whose search hit a limit is
+  marked `*` ("best found, not proven"). On the hard 9-city map the best layout
+  is proven and on screen in 10.7 s and the sweep ends at 60 s with three
+  points, two of them starred. On the 6-city all-resource cluster: best point
+  in 1.7 s.
 - **Validation:** `npm test` runs `tools/differential-test.mjs` — the corpus in
   `tests/corpus/` plus random maps with obstacles, used resources, border growths
   and preplaced buildings/markets — against the C++ brute force built to
@@ -64,6 +65,44 @@ Stages 0, 1 and 3 are implemented on the `cpsat-solver` branch; Stage 2 is not.
   if the 4.6 MB first-visit download or the CDN dependency becomes a problem.
   The node harness in `tools/minizinc-node.mjs` runs the exact browser wasm
   build, so a Stage 2 build can reuse the same tests.
+
+## Status (2026-09-05): the border-growth dimension
+
+The frontier gained a third objective, the number of border growths used. There
+is no border-growth choice in the model itself: which city owns a tile contested
+by two growths depends on the order they happen in, and a single ordering has to
+be consistent across every contested tile at once, so letting the solver assign
+contested tiles freely would relax the model into scores `scoreLayout` cannot
+reproduce. Instead `solveBorderGrowthFrontier` enumerates growth plans and runs
+the existing, oracle-checked market/building sweep once per plan, merging the
+points by three-way dominance.
+
+Plans are pruned before they cost a solve: cities whose growth claims no tile
+are dropped (appending actions never takes a tile away, so they claim nothing in
+any plan), and plans that come out with identical ownership are collapsed. What
+is left is tried fewest-growths-first.
+
+Measured on the row map with no city grown yet, at the limits above:
+
+| cities | depth | plans | total | frontier points |
+|---|---|---|---|---|
+| 2 | 1 | 3 | 2.7 s | 3 |
+| 3 | 1 | 4 | 3.6 s | 3 |
+| 4 | 1 | 5 | 7.3 s | 5 |
+| 6 | 2 | 22 | 42.1 s | 11 |
+| 9 | 3 | 130 | 120 s (capped) | 12 |
+
+The first point is on screen in under a second in every case. Past about six
+cities the plan count is what bites — nine cities is 130 plans at roughly a
+second each — so the sweep returns fewer plans rather than running long, and
+because plans are ordered fewest-growths-first the ones it drops are the
+deepest. The all-resource clusters still cap out: 2x3 covers part of its 22
+plans in 120 s, 3x3 part of its 93.
+
+`npm test` checks it the same way the two-dimensional sweep is checked, on the
+cases small enough to afford one oracle run per plan (145 of 204 at seed 1, to
+depth 2 so that two growths contest tiles): the frontier must come out as
+exactly the non-dominated triples over every plan's oracle frontier.
 
 ---
 

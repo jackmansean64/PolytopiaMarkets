@@ -33,11 +33,17 @@ export const DEFAULT_SOLVER = 'chuffed';
  * building tiebreak is what gets slow on dense clustered maps, so it is capped
  * short and degrades to best-found. The sweep budget stops alternatives from
  * keeping the user waiting once the best layout is already on screen.
+ *
+ * The border-growth sweep runs one market/building sweep per growth plan, so it
+ * gets a longer overall budget and a per-plan cap that keeps one slow plan from
+ * eating it. Plans are tried fewest-growths-first, so a sweep that runs out of
+ * budget has still covered the layouts asking least of the user.
  */
 export const INTERACTIVE_SOLVE_LIMITS = Object.freeze({
   marketTimeLimitMs: 60000,
   tiebreakTimeLimitMs: 15000,
-  sweepTimeBudgetMs: 60000,
+  sweepTimeBudgetMs: 120000,
+  planTimeBudgetMs: 20000,
 });
 
 /** Tile types the solver may place a building or market on. */
@@ -280,6 +286,7 @@ async function solvePlacements(MiniZinc, modelData, sweep, solver, timeLimitMs) 
  * @property {number} marketTotal
  * @property {number} buildingTotal
  * @property {number[][]} layout - Tile types with BUILDING/MARKET placed.
+ * @property {number[][]} owner - Owner per cell the layout was scored against.
  * @property {boolean} isProvenOptimal - False when a time limit cut a search
  *   short, in which case this is the best layout found rather than the best.
  * @property {object[]} solveStatistics - MiniZinc/solver statistics for each
@@ -287,7 +294,7 @@ async function solvePlacements(MiniZinc, modelData, sweep, solver, timeLimitMs) 
  */
 
 /**
- * Finds up to `maxConfigs` Pareto-optimal layouts, highest market total first.
+ * Sweeps the market/building frontier for one fixed ownership map.
  *
  * Each frontier point takes two solves under a floor on the building total:
  * maximise the market total, then hold that total and maximise the building
@@ -298,41 +305,33 @@ async function solvePlacements(MiniZinc, modelData, sweep, solver, timeLimitMs) 
  *
  * @param {object} MiniZinc - The `minizinc` package namespace (wasm or native).
  * @param {number[][]} grid - Tile types per cell.
- * @param {{row: number, col: number}[]} cityCenters - City centre per city id.
- * @param {number[]} actionOrder - City ids in capture/growth order.
- * @param {object} [options]
+ * @param {number[][]} owner - Owner per cell from computeOwnership.
+ * @param {number} cityCount - Number of cities.
+ * @param {object} options
  * @param {number} [options.maxConfigs] - Frontier points to return.
  * @param {string} [options.solver] - MiniZinc solver tag.
  * @param {number} [options.marketTimeLimitMs] - Cap on each market-total solve.
- *   Unset means solve to proven optimality however long it takes.
- * @param {number} [options.tiebreakTimeLimitMs] - Cap on each building-total
- *   solve. Past it the best building total found is used and the point is
- *   flagged as not proven optimal; the market total stays exact.
- * @param {number} [options.sweepTimeBudgetMs] - Rough cap on the whole sweep.
- *   Per-solve caps shrink to what is left of it, and no new point is started
- *   once it is spent, so the sweep ends with fewer points rather than late.
- * @param {(config: FrontierConfig) => void} [options.onConfig] - Called with
- *   each frontier point as soon as it is found, before the sweep continues.
+ * @param {number} [options.tiebreakTimeLimitMs] - Cap on each building-total solve.
+ * @param {() => number} options.budgetLeftMs - Milliseconds left for this sweep;
+ *   per-solve caps shrink to it and no new point is started once it is spent.
+ * @param {boolean} [options.throwIfEmptyOnTimeout] - Throw rather than return
+ *   nothing when the budget runs out before any layout is found. Defaults to true.
+ * @param {(config: FrontierConfig) => void} [options.onConfig] - Called with each
+ *   point as soon as it is found, before the sweep continues.
  * @returns {Promise<FrontierConfig[]>}
- * @throws {Error} If the solver fails, if no layout at all is found within the
- *   time limits, or if a returned layout does not score what the model
- *   claimed (a modelling bug).
+ * @throws {Error} If the solver fails, or if a returned layout does not score
+ *   what the model claimed (a modelling bug).
  */
-export async function solveParetoFrontier(MiniZinc, grid, cityCenters, actionOrder, options = {}) {
+async function sweepFrontier(MiniZinc, grid, owner, cityCount, options) {
   const maxConfigs = options.maxConfigs ?? DEFAULT_MAX_CONFIGS;
   const solver = options.solver ?? DEFAULT_SOLVER;
+  const { budgetLeftMs } = options;
 
-  const owner = computeOwnership(grid, cityCenters, actionOrder);
-  const { tiles, data } = buildPlacementModelData(grid, owner, cityCenters.length);
+  const { tiles, data } = buildPlacementModelData(grid, owner, cityCount);
   const scoredLayout = (solution) => {
     const layout = applyPlacements(grid, tiles, solution.hasBuilding, solution.hasMarket);
     return { layout, ...scoreLayout(layout, owner) };
   };
-
-  const startedAt = performance.now();
-  const budgetLeftMs = () => (options.sweepTimeBudgetMs
-    ? Math.max(0, options.sweepTimeBudgetMs - (performance.now() - startedAt))
-    : Infinity);
   const solveLimit = (perSolveLimitMs) => {
     const limit = Math.min(perSolveLimitMs ?? Infinity, budgetLeftMs());
     return Number.isFinite(limit) ? Math.max(1, Math.round(limit)) : undefined;
@@ -351,7 +350,8 @@ export async function solveParetoFrontier(MiniZinc, grid, cityCenters, actionOrd
     if (marketSolution === null) break;
     if (marketSolution.isTimedOut) {
       if (configs.length > 0) break;
-      throw new Error('No layout found within the time limit');
+      if (options.throwIfEmptyOnTimeout ?? true) throw new Error('No layout found within the time limit');
+      break;
     }
     const marketBest = scoredLayout(marketSolution);
 
@@ -373,6 +373,7 @@ export async function solveParetoFrontier(MiniZinc, grid, cityCenters, actionOrd
       marketTotal: best.marketTotal,
       buildingTotal: best.buildingTotal,
       layout: best.layout,
+      owner,
       isProvenOptimal: marketSolution.isProvenOptimal && isTiebreakUsable && tiebreakSolution.isProvenOptimal,
       solveStatistics: [marketSolution.statistics, isTiebreakUsable ? tiebreakSolution.statistics : null].filter(Boolean),
     };
@@ -381,4 +382,280 @@ export async function solveParetoFrontier(MiniZinc, grid, cityCenters, actionOrd
     buildingTotalMin = best.buildingTotal + 1;
   }
   return configs;
+}
+
+/**
+ * Finds up to `maxConfigs` Pareto-optimal layouts for one capture/growth order,
+ * highest market total first.
+ *
+ * This is the two-dimensional sweep the C++ brute force is compared against:
+ * the border growths are exactly the ones in `actionOrder`. Use
+ * solveBorderGrowthFrontier to search over border growths as well.
+ *
+ * @param {object} MiniZinc - The `minizinc` package namespace (wasm or native).
+ * @param {number[][]} grid - Tile types per cell.
+ * @param {{row: number, col: number}[]} cityCenters - City centre per city id.
+ * @param {number[]} actionOrder - City ids in capture/growth order.
+ * @param {object} [options] - As sweepFrontier, plus:
+ * @param {number} [options.sweepTimeBudgetMs] - Rough cap on the whole sweep.
+ * @returns {Promise<FrontierConfig[]>}
+ */
+export async function solveParetoFrontier(MiniZinc, grid, cityCenters, actionOrder, options = {}) {
+  const owner = computeOwnership(grid, cityCenters, actionOrder);
+  const startedAt = performance.now();
+  const budgetLeftMs = () => (options.sweepTimeBudgetMs
+    ? Math.max(0, options.sweepTimeBudgetMs - (performance.now() - startedAt))
+    : Infinity);
+  return sweepFrontier(MiniZinc, grid, owner, cityCenters.length, { ...options, budgetLeftMs });
+}
+
+/**
+ * How many extra border growths the sweep tries at once, as a fraction of the
+ * map's cities. Every combination up to that many is tried, so this fraction
+ * is the exponent on the search: the plan count is sum(C(cities, 0..depth)).
+ */
+export const BORDER_GROWTH_DEPTH_FRACTION = 1 / 3;
+
+/**
+ * Ceiling on generated growth plans, so a map with many cities cannot lock the
+ * tab up building plans it would never have time to solve. Plans are generated
+ * fewest-growths-first, so the cap drops the deepest ones.
+ */
+const MAX_GROWTH_COMBINATIONS = 2000;
+
+/**
+ * The deepest combination of extra border growths worth trying on a map.
+ *
+ * @param {number} cityCount - Number of cities on the map.
+ * @returns {number} At least one growth, and at most a third of the cities.
+ */
+export function maxExtraBorderGrowths(cityCount) {
+  return Math.max(1, Math.floor(cityCount * BORDER_GROWTH_DEPTH_FRACTION));
+}
+
+/**
+ * Yields every combination of `size` of `items`, in index order.
+ *
+ * @param {number[]} items - Items to choose from.
+ * @param {number} size - How many to choose.
+ * @yields {number[]} One combination, in the order the items appear.
+ */
+function* combinationsOfSize(items, size) {
+  const chosen = [];
+  function* walk(start) {
+    if (chosen.length === size) {
+      yield chosen.slice();
+      return;
+    }
+    for (let index = start; index <= items.length - (size - chosen.length); index++) {
+      chosen.push(items[index]);
+      yield* walk(index + 1);
+      chosen.pop();
+    }
+  }
+  yield* walk(0);
+}
+
+/**
+ * Counts the tiles some city owns.
+ *
+ * @param {number[][]} owner - Owner per cell from computeOwnership.
+ * @returns {number} Cells whose owner is not UNOWNED.
+ */
+function ownedTileCount(owner) {
+  return owner.reduce(
+    (total, row) => total + row.reduce((count, cell) => count + (cell === UNOWNED ? 0 : 1), 0), 0);
+}
+
+/**
+ * @typedef {object} GrowthPlan
+ * @property {number[]} growthCities - City ids to border-grow, ascending.
+ * @property {number[][]} owner - Ownership after those growths.
+ * @property {number} newTileCount - Tiles the growths claim over the base map.
+ */
+
+/**
+ * Builds the growth plans to try, fewest growths first and, within a growth
+ * count, the ones claiming the most new land first — so a sweep cut short by
+ * its time budget has spent it on the plans most likely to pay.
+ *
+ * Extra growths are appended after everything the user already did, which is
+ * the question the page is asking: these cities are captured, which should now
+ * grow? Growths within one plan go in city id order, so contested tiles fall to
+ * the lowest id; other orders of the same set are not tried.
+ *
+ * Cities that already grew are left alone, as are ones whose growth would claim
+ * nothing (their ring is all obstacle, off-map or already owned) — appending
+ * actions never takes a tile away, so such a city claims nothing in any plan.
+ * Plans that come out with identical ownership are collapsed to one.
+ *
+ * @param {number[][]} grid - Tile types per cell.
+ * @param {{row: number, col: number}[]} cityCenters - City centre per city id.
+ * @param {number[]} actionOrder - City ids in capture/growth order.
+ * @param {number} maxExtraGrowths - Most growths any one plan may add.
+ * @returns {{plans: GrowthPlan[], existingBorderGrowthCount: number}} The plans
+ *   in the order to try them, and how many growths `actionOrder` already has.
+ */
+export function planBorderGrowths(grid, cityCenters, actionOrder, maxExtraGrowths) {
+  const actionCountByCity = cityCenters.map((_, cityId) =>
+    actionOrder.reduce((count, id) => count + (id === cityId ? 1 : 0), 0));
+  const existingBorderGrowthCount = actionCountByCity.filter((count) => count >= 2).length;
+
+  const baseOwner = computeOwnership(grid, cityCenters, actionOrder);
+  const baseOwnedCount = ownedTileCount(baseOwner);
+  const growableCities = cityCenters
+    .map((_, cityId) => cityId)
+    .filter((cityId) => actionCountByCity[cityId] === 1)
+    .filter((cityId) => ownedTileCount(
+      computeOwnership(grid, cityCenters, actionOrder.concat([cityId]))) > baseOwnedCount);
+
+  const plans = [];
+  const seenOwnerships = new Set();
+  const growthDepth = Math.min(maxExtraGrowths, growableCities.length);
+  for (let size = 0; size <= growthDepth && plans.length < MAX_GROWTH_COMBINATIONS; size++) {
+    for (const growthCities of combinationsOfSize(growableCities, size)) {
+      if (plans.length >= MAX_GROWTH_COMBINATIONS) break;
+      const owner = computeOwnership(grid, cityCenters, actionOrder.concat(growthCities));
+      const signature = owner.map((row) => row.join(',')).join(';');
+      if (seenOwnerships.has(signature)) continue;
+      seenOwnerships.add(signature);
+      plans.push({ growthCities, owner, newTileCount: ownedTileCount(owner) - baseOwnedCount });
+    }
+  }
+  plans.sort((a, b) => a.growthCities.length - b.growthCities.length || b.newTileCount - a.newTileCount);
+  return { plans, existingBorderGrowthCount };
+}
+
+/**
+ * @typedef {FrontierConfig} GrowthFrontierConfig
+ * @property {number} borderGrowthCount - Border growths this layout needs in
+ *   total, counting the ones already in `actionOrder`.
+ * @property {number[]} extraBorderGrowthCities - City ids to grow on top of
+ *   `actionOrder` to reach this layout.
+ */
+
+/**
+ * Whether `a` is at least as good as `b` on all three objectives and strictly
+ * better on one: more market, more buildings, fewer border growths.
+ *
+ * @param {GrowthFrontierConfig} a - The point that might dominate.
+ * @param {GrowthFrontierConfig} b - The point that might be dominated.
+ * @returns {boolean}
+ */
+function dominates(a, b) {
+  return a.borderGrowthCount <= b.borderGrowthCount
+    && a.marketTotal >= b.marketTotal
+    && a.buildingTotal >= b.buildingTotal
+    && (a.borderGrowthCount < b.borderGrowthCount
+      || a.marketTotal > b.marketTotal
+      || a.buildingTotal > b.buildingTotal);
+}
+
+/**
+ * Whether two points score the same on all three objectives.
+ *
+ * @param {GrowthFrontierConfig} a - One point.
+ * @param {GrowthFrontierConfig} b - The other.
+ * @returns {boolean}
+ */
+function hasSameScores(a, b) {
+  return a.borderGrowthCount === b.borderGrowthCount
+    && a.marketTotal === b.marketTotal
+    && a.buildingTotal === b.buildingTotal;
+}
+
+/**
+ * Adds a point to a frontier, dropping whatever it dominates. A point that ties
+ * one already there is dropped, so the first plan to reach a score keeps it —
+ * and since plans are tried fewest-growths-first, that is the cheapest one.
+ *
+ * @param {GrowthFrontierConfig[]} frontier - Mutated in place.
+ * @param {GrowthFrontierConfig} candidate - The point to add.
+ * @returns {boolean} Whether the frontier changed.
+ */
+function addToFrontier(frontier, candidate) {
+  if (frontier.some((point) => hasSameScores(point, candidate) || dominates(point, candidate))) return false;
+  for (let index = frontier.length - 1; index >= 0; index--) {
+    if (dominates(candidate, frontier[index])) frontier.splice(index, 1);
+  }
+  frontier.push(candidate);
+  return true;
+}
+
+/**
+ * Orders a frontier for display: fewest growths first, best market first.
+ *
+ * @param {GrowthFrontierConfig[]} frontier - Points in any order.
+ * @returns {GrowthFrontierConfig[]} A sorted copy.
+ */
+function sortedFrontier(frontier) {
+  return frontier.slice().sort((a, b) =>
+    a.borderGrowthCount - b.borderGrowthCount
+    || b.marketTotal - a.marketTotal
+    || b.buildingTotal - a.buildingTotal);
+}
+
+/**
+ * Finds the Pareto frontier over market total, building total and border
+ * growths used.
+ *
+ * Every combination of extra border growths up to maxExtraBorderGrowths() is
+ * tried; each gets its own two-dimensional market/building sweep, and the
+ * points are merged into one three-dimensional frontier. Plans are tried
+ * fewest-growths-first, so the layouts asking least of the user arrive first
+ * and a run cut short by its budget has still covered them.
+ *
+ * A point already on the frontier can be dropped later by a plan with the same
+ * growth count that beats it, so callers are handed the whole frontier through
+ * `onFrontier` rather than one point at a time.
+ *
+ * @param {object} MiniZinc - The `minizinc` package namespace (wasm or native).
+ * @param {number[][]} grid - Tile types per cell.
+ * @param {{row: number, col: number}[]} cityCenters - City centre per city id.
+ * @param {number[]} actionOrder - City ids in capture/growth order.
+ * @param {object} [options] - As sweepFrontier, plus:
+ * @param {number} [options.maxExtraBorderGrowths] - Growth depth to search.
+ * @param {number} [options.sweepTimeBudgetMs] - Rough cap on the whole sweep.
+ *   No new plan is started once it is spent.
+ * @param {number} [options.planTimeBudgetMs] - Rough cap on any single plan, so
+ *   one slow plan cannot spend the whole sweep's budget.
+ * @param {(frontier: GrowthFrontierConfig[]) => void} [options.onFrontier] -
+ *   Called with the whole frontier, in display order, whenever it changes.
+ * @returns {Promise<GrowthFrontierConfig[]>} The frontier in display order.
+ * @throws {Error} If the solver fails, if no layout at all is found within the
+ *   time limits, or if a returned layout does not score what the model claimed.
+ */
+export async function solveBorderGrowthFrontier(MiniZinc, grid, cityCenters, actionOrder, options = {}) {
+  const startedAt = performance.now();
+  const budgetLeftMs = () => (options.sweepTimeBudgetMs
+    ? Math.max(0, options.sweepTimeBudgetMs - (performance.now() - startedAt))
+    : Infinity);
+
+  const maxExtraGrowths = options.maxExtraBorderGrowths ?? maxExtraBorderGrowths(cityCenters.length);
+  const { plans, existingBorderGrowthCount } =
+    planBorderGrowths(grid, cityCenters, actionOrder, maxExtraGrowths);
+
+  const frontier = [];
+  for (const plan of plans) {
+    if (frontier.length > 0 && budgetLeftMs() === 0) break;
+    const planStartedAt = performance.now();
+    const planBudgetLeftMs = () => Math.min(budgetLeftMs(), options.planTimeBudgetMs
+      ? Math.max(0, options.planTimeBudgetMs - (performance.now() - planStartedAt))
+      : Infinity);
+
+    await sweepFrontier(MiniZinc, grid, plan.owner, cityCenters.length, {
+      ...options,
+      budgetLeftMs: planBudgetLeftMs,
+      throwIfEmptyOnTimeout: frontier.length === 0,
+      onConfig: (config) => {
+        const hasChanged = addToFrontier(frontier, {
+          ...config,
+          borderGrowthCount: existingBorderGrowthCount + plan.growthCities.length,
+          extraBorderGrowthCities: plan.growthCities.slice(),
+        });
+        if (hasChanged && options.onFrontier) options.onFrontier(sortedFrontier(frontier));
+      },
+    });
+  }
+  return sortedFrontier(frontier);
 }
