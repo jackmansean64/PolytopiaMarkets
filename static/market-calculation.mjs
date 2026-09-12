@@ -32,10 +32,11 @@ const SOLVER_WORKER_COUNT = 1;
  *   ready: Promise<void>,
  *   calculate: (request: {
  *     rows: number, cols: number, flatGrid: Int32Array, cityFlat: Int32Array, actionOrder: Int32Array,
- *   }, callbacks?: { onFrontier?: (frontier: PageConfig[]) => void }) => Promise<PageConfig[]>,
+ *   }, callbacks?: { onFrontier?: (frontier: PageConfig[]) => void, signal?: AbortSignal }) => Promise<PageConfig[]>,
  * }} `ready` resolves once the solver can be used; `calculate` waits for it and
  *   reports the frontier through `onFrontier` every time it changes, before
- *   resolving with the final one.
+ *   resolving with the final one. Aborting `signal` stops the sweep and kills the
+ *   solver worker it is running in, and rejects with the abort reason.
  */
 export function createMarketCalculator() {
   const ready = MiniZinc.init({ numWorkers: SOLVER_WORKER_COUNT });
@@ -51,6 +52,7 @@ export function createMarketCalculator() {
 
   async function calculate({ rows, cols, flatGrid, cityFlat, actionOrder }, callbacks = {}) {
     await ready;
+    callbacks.signal?.throwIfAborted();
     const grid = [];
     for (let row = 0; row < rows; row++) {
       grid.push(Array.from(flatGrid.subarray(row * cols, (row + 1) * cols)));
@@ -61,6 +63,7 @@ export function createMarketCalculator() {
     }
     const frontier = await solveBorderGrowthFrontier(MiniZinc, grid, cityCenters, Array.from(actionOrder), {
       ...INTERACTIVE_SOLVE_LIMITS,
+      signal: callbacks.signal,
       onFrontier: callbacks.onFrontier
         ? (configs) => callbacks.onFrontier(configs.map(toPageConfig))
         : undefined,

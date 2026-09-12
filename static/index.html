@@ -221,6 +221,10 @@ import { createMarketCalculator } from './market-calculation.mjs';
 let marketCalculator = null;
 let isMarketCalculatorReady = false;
 let calcInProgress = false;
+// Cancels the calculation in flight; null when none is running. Any edit aborts
+// it: the solver would otherwise keep a worker pegged for minutes and then paint
+// a preview of the map as it was before the edit.
+let calcAbortController = null;
 // Up to 3 Pareto-optimal configs from the last calculation, plus which one is
 // being previewed. Previews are non-destructive: they overlay placements on the
 // grid without modifying it. Cleared on any edit.
@@ -254,9 +258,16 @@ function initMarketCalculator() {
 }
 function finishCalculation() {
   hideCalcOverlay();
+  calcAbortController = null;
   calcInProgress = false;
   const btn = $('calc-btn');
   if (btn) btn.disabled = false;
+}
+// Stops the calculation in flight, if any, and drops whatever it would report.
+function cancelCalculation() {
+  if (!calcAbortController) return;
+  calcAbortController.abort();
+  finishCalculation();
 }
 
 function initUsageModal() {
@@ -322,13 +333,14 @@ function restoreEditorState(s) {
   actionOrder = s.actionOrder.slice();
   tilesOwnedByCity = cloneTilesOwnedByCity(s.tilesOwnedByCity);
 }
-function pushUndoSnapshot() { undoStack.push(snapshotEditorState()); updateUndoButton(); resetPreviewState(); }
+function pushUndoSnapshot() { undoStack.push(snapshotEditorState()); updateUndoButton(); cancelCalculation(); resetPreviewState(); }
 function updateUndoButton() { const b = $('undo-btn'); if (b) b.disabled = undoStack.length === 0; }
 function resetUndoHistory() { undoStack.length = 0; updateUndoButton(); }
 function undoOnce() {
   if (undoStack.length === 0) return;
   restoreEditorState(undoStack.pop());
   updateUndoButton();
+  cancelCalculation();
   resetPreviewState();
   render();
 }
@@ -668,6 +680,8 @@ $('calc-btn').onclick = () => {
   }
   const cityFlat = cityCenters.flatMap(cc => [cc.r, cc.c]);
   calcInProgress = true;
+  calcAbortController = new AbortController();
+  const { signal } = calcAbortController;
   $('calc-btn').disabled = true;
   showCalcOverlay();
   resetPreviewState();
@@ -679,19 +693,26 @@ $('calc-btn').onclick = () => {
     actionOrder: Int32Array.from(actionOrder),
   }, {
     // Show the frontier as soon as it has a point; the rest fills in after.
-    onFrontier: (configs) => { hideCalcOverlay(); setFrontier(configs); },
+    onFrontier: (configs) => {
+      if (signal.aborted) return;
+      hideCalcOverlay();
+      setFrontier(configs);
+    },
+    signal,
   }).then((configs) => {
+    if (signal.aborted) return;
     finishCalculation();
     setFrontier(configs);
     if (configs.length === 0) alert('No valid market layout was found for this map.');
   }).catch((e) => {
+    if (signal.aborted) return;
     console.error(e);
     finishCalculation();
     alert('Calculation failed: ' + (e && e.message ? e.message : e));
   });
 };
 
-$('clear-calc-btn').onclick = () => { resetPreviewState(); render(); };
+$('clear-calc-btn').onclick = () => { cancelCalculation(); resetPreviewState(); render(); };
 
 $('undo-btn').onclick = () => undoOnce();
 $('clear-btn').onclick = () => {
@@ -699,6 +720,7 @@ $('clear-btn').onclick = () => {
     resetUndoHistory();
     grid = [newRow(3), newRow(3), newRow(3)];
     cityCenters = []; actionOrder = []; tilesOwnedByCity = {};
+    cancelCalculation();
     resetPreviewState();
     render();
   }

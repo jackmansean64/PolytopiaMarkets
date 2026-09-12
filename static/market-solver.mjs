@@ -244,6 +244,8 @@ function applyPlacements(grid, tiles, hasBuilding, hasMarket) {
  * @param {{isMaximizingMarket: boolean, marketTotalPinned: number, buildingTotalMin: number}} sweep
  * @param {string} solver - MiniZinc solver tag.
  * @param {number|undefined} timeLimitMs - Cap on this solve; undefined means none.
+ * @param {AbortSignal} [signal] - Aborting it cancels the solve, which kills the
+ *   solver worker and rejects with the abort reason.
  * @returns {Promise<{hasBuilding: boolean[], hasMarket: boolean[], isProvenOptimal: boolean, statistics: object} | {isTimedOut: true} | null>}
  *   The best placements found; null if no layout satisfies the controls; or
  *   `{isTimedOut: true}` if the time limit expired before any layout was
@@ -252,7 +254,8 @@ function applyPlacements(grid, tiles, hasBuilding, hasMarket) {
  * @throws {Error} If MiniZinc reports an error, or if the search ends without
  *   proving optimality when no time limit was set.
  */
-async function solvePlacements(MiniZinc, modelData, sweep, solver, timeLimitMs) {
+async function solvePlacements(MiniZinc, modelData, sweep, solver, timeLimitMs, signal) {
+  signal?.throwIfAborted();
   const model = new MiniZinc.Model();
   model.addFile('market.mzn', MARKET_MODEL);
   model.addJson({ ...modelData, ...sweep });
@@ -262,7 +265,18 @@ async function solvePlacements(MiniZinc, modelData, sweep, solver, timeLimitMs) 
   if (timeLimitMs) options['time-limit'] = timeLimitMs;
   const solve = model.solve({ options });
   solve.on('error', (event) => errors.push(event.message));
-  const result = await solve;
+  const cancelSolve = () => { if (solve.isRunning()) solve.cancel(); };
+  signal?.addEventListener('abort', cancelSolve, { once: true });
+  let result;
+  try {
+    result = await solve;
+  } catch (e) {
+    // A cancelled solve rejects with its exit event; report it as the abort it is.
+    signal?.throwIfAborted();
+    throw e;
+  } finally {
+    signal?.removeEventListener('abort', cancelSolve);
+  }
 
   if (errors.length > 0) throw new Error(`MiniZinc error: ${errors.join('; ')}`);
   if (result.status === 'UNSATISFIABLE') return null;
@@ -318,6 +332,8 @@ async function solvePlacements(MiniZinc, modelData, sweep, solver, timeLimitMs) 
  *   nothing when the budget runs out before any layout is found. Defaults to true.
  * @param {(config: FrontierConfig) => void} [options.onConfig] - Called with each
  *   point as soon as it is found, before the sweep continues.
+ * @param {AbortSignal} [options.signal] - Aborting it stops the sweep, cancelling
+ *   the solve in flight and rejecting with the abort reason.
  * @returns {Promise<FrontierConfig[]>}
  * @throws {Error} If the solver fails, or if a returned layout does not score
  *   what the model claimed (a modelling bug).
@@ -340,12 +356,13 @@ async function sweepFrontier(MiniZinc, grid, owner, cityCount, options) {
   const configs = [];
   let buildingTotalMin = 0;
   while (configs.length < maxConfigs) {
+    options.signal?.throwIfAborted();
     if (configs.length > 0 && budgetLeftMs() === 0) break;
 
     const marketSolution = await solvePlacements(
       MiniZinc, data,
       { isMaximizingMarket: true, marketTotalPinned: NOT_PINNED, buildingTotalMin },
-      solver, solveLimit(options.marketTimeLimitMs),
+      solver, solveLimit(options.marketTimeLimitMs), options.signal,
     );
     if (marketSolution === null) break;
     if (marketSolution.isTimedOut) {
@@ -358,7 +375,7 @@ async function sweepFrontier(MiniZinc, grid, owner, cityCount, options) {
     const tiebreakSolution = budgetLeftMs() === 0 ? { isTimedOut: true } : await solvePlacements(
       MiniZinc, data,
       { isMaximizingMarket: false, marketTotalPinned: marketBest.marketTotal, buildingTotalMin },
-      solver, solveLimit(options.tiebreakTimeLimitMs),
+      solver, solveLimit(options.tiebreakTimeLimitMs), options.signal,
     );
     if (tiebreakSolution === null) {
       throw new Error(`Tiebreak found no layout with market total ${marketBest.marketTotal}, which the market solve just produced`);
@@ -621,6 +638,8 @@ function sortedFrontier(frontier) {
  *   one slow plan cannot spend the whole sweep's budget.
  * @param {(frontier: GrowthFrontierConfig[]) => void} [options.onFrontier] -
  *   Called with the whole frontier, in display order, whenever it changes.
+ * @param {AbortSignal} [options.signal] - Aborting it stops the sweep, cancelling
+ *   the solve in flight and rejecting with the abort reason.
  * @returns {Promise<GrowthFrontierConfig[]>} The frontier in display order.
  * @throws {Error} If the solver fails, if no layout at all is found within the
  *   time limits, or if a returned layout does not score what the model claimed.
@@ -637,6 +656,7 @@ export async function solveBorderGrowthFrontier(MiniZinc, grid, cityCenters, act
 
   const frontier = [];
   for (const plan of plans) {
+    options.signal?.throwIfAborted();
     if (frontier.length > 0 && budgetLeftMs() === 0) break;
     const planStartedAt = performance.now();
     const planBudgetLeftMs = () => Math.min(budgetLeftMs(), options.planTimeBudgetMs
